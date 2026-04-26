@@ -8,7 +8,10 @@ use mchprs_blocks::blocks::{Block, FlipDirection, HopperFacing, RotateAmt};
 use mchprs_blocks::items::{Item, ItemStack};
 use mchprs_blocks::{BlockDirection, BlockFace, BlockFacing, BlockPos};
 use mchprs_network::packets::clientbound::*;
-use mchprs_schematic::{load_schematic, paste_clipboard, save_schematic, WorldEditClipboard};
+use mchprs_schematic::{
+    load_schematic, load_schematic_from_reader, paste_clipboard, paste_clipboard_batch,
+    save_schematic, WorldEditClipboard,
+};
 use mchprs_text::{ColorCode, TextComponentBuilder};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -1104,4 +1107,81 @@ pub(super) fn execute_replace_container(ctx: CommandExecuteContext<'_>) {
 
 pub(super) fn execute_unimplemented(_ctx: CommandExecuteContext<'_>) {
     unimplemented!("Unimplimented worldedit command");
+}
+
+const ROM_CELL_BYTES: &[u8] = include_bytes!("../../../assets/rom_4x4_cell.schem");
+
+fn most_square_factors(n: usize) -> (usize, usize) {
+    for i in (1..=(n as f64).sqrt() as usize).rev() {
+        if n % i == 0 {
+            return (i, n / i);
+        }
+    }
+    (1, n)
+}
+
+pub(super) fn execute_romtile(ctx: CommandExecuteContext<'_>) {
+    let start_time = Instant::now();
+    let bit_size = ctx.arguments[0].unwrap_uint() as usize;
+    let cell_count = ctx.arguments[1].unwrap_uint() as usize;
+
+    if bit_size == 0 || cell_count == 0 {
+        ctx.player
+            .send_error_message("bit_size and cell_count must be greater than 0.");
+        return;
+    }
+
+    let vertical_stacks = bit_size.div_ceil(4);
+    let horiz_total = cell_count.div_ceil(4);
+    let (x_count, z_count) = most_square_factors(horiz_total);
+
+    let mut cell = match load_schematic_from_reader(std::io::Cursor::new(ROM_CELL_BYTES)) {
+        Ok(c) => c,
+        Err(e) => {
+            ctx.player
+                .send_error_message(&format!("Failed to load ROM cell schematic: {e}"));
+            return;
+        }
+    };
+    // Zero offset so //pos1 is the exact placement corner
+    cell.offset_x = 2;
+    cell.offset_y = -1;
+    cell.offset_z = 6;
+
+    let origin = ctx.player.first_position.unwrap();
+
+    // Capture undo for the full bounding box before making any changes
+    let undo_end = BlockPos::new(
+        origin.x + (x_count as i32 - 1) * 4 + cell.size_x as i32 - 1,
+        origin.y + (vertical_stacks as i32 - 1) * 2 + cell.size_y as i32 - 1,
+        origin.z - (z_count as i32 - 1) * 4 + cell.size_z as i32 - 1,
+    );
+    capture_undo(ctx.plot, ctx.player, origin, undo_end);
+
+    let positions: Vec<BlockPos> = (0..vertical_stacks)
+        .flat_map(|yi| {
+            (0..x_count).flat_map(move |xi| {
+                (0..z_count).map(move |zi| {
+                    BlockPos::new(
+                        origin.x + xi as i32 * 4,
+                        origin.y + yi as i32 * 2,
+                        origin.z - zi as i32 * 4,
+                    )
+                })
+            })
+        })
+        .collect();
+    for chunk in positions.chunks(5000) {
+        paste_clipboard_batch(ctx.plot, &cell, chunk, true);
+    }
+
+    ctx.player.send_worldedit_message(&format!(
+        "ROM placed: {}×{} grid × {} layers = {} bits, {} cells. ({:?})",
+        x_count,
+        z_count,
+        vertical_stacks * 4,
+        vertical_stacks * 4,
+        x_count * z_count * 4,
+        start_time.elapsed()
+    ));
 }

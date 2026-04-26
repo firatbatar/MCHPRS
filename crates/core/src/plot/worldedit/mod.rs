@@ -741,6 +741,17 @@ static COMMANDS: LazyLock<HashMap<&'static str, WorldeditCommand>> = LazyLock::n
            permission_node: "mchprs.we.replacecontainer",
            requires_positions: true,
            ..Default::default()
+        },
+        "//romtile" => WorldeditCommand {
+            arguments: &[
+                argument!("bit_size", UnsignedInteger, "Desired bit depth per readable line (rounded up to nearest multiple of 4)"),
+                argument!("cell_count", UnsignedInteger, "Desired total number of cells (rounded up to nearest multiple of 4)"),
+            ],
+            execute_fn: execute_romtile,
+            description: "Tile the embedded ROM cell schematic into a full ROM at //pos1",
+            permission_node: "mchprs.we.romtile",
+            requires_positions: true,
+            ..Default::default()
         }
     }
 });
