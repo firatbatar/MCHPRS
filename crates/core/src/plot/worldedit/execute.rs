@@ -1110,6 +1110,7 @@ pub(super) fn execute_unimplemented(_ctx: CommandExecuteContext<'_>) {
 }
 
 const ROM_CELL_BYTES: &[u8] = include_bytes!("../../../assets/rom_4x4_cell.schem");
+const ROM_CELL_SINGLE_BYTES: &[u8] = include_bytes!("../../../assets/rom_4x4_cell_full_orange.schem");
 
 fn most_square_factors(n: usize) -> (usize, usize) {
     for i in (1..=(n as f64).sqrt() as usize).rev() {
@@ -1135,13 +1136,27 @@ pub(super) fn execute_romtile(ctx: CommandExecuteContext<'_>) {
     let horiz_total = cell_count.div_ceil(4);
     let (x_count, z_count) = most_square_factors(horiz_total);
 
-    let mut cell = match load_schematic_from_reader(std::io::Cursor::new(ROM_CELL_BYTES)) {
+    let cell_multi_color = match load_schematic_from_reader(std::io::Cursor::new(ROM_CELL_BYTES)) {
         Ok(c) => c,
         Err(e) => {
             ctx.player
                 .send_error_message(&format!("Failed to load ROM cell schematic: {e}"));
             return;
         }
+    };
+    let cell_single_color = match load_schematic_from_reader(std::io::Cursor::new(ROM_CELL_SINGLE_BYTES)) {
+        Ok(c) => c,
+        Err(e) => {
+            ctx.player
+                .send_error_message(&format!("Failed to load ROM cell (single color) schematic: {e}"));
+            return;
+        }
+    };
+
+    let mut cell = if ctx.has_flag('s') {
+        cell_single_color
+    } else {
+        cell_multi_color
     };
     // Zero offset so //pos1 is the exact placement corner
     cell.offset_x = 2;
