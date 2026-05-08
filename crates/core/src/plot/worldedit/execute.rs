@@ -16,6 +16,7 @@ use mchprs_text::{ColorCode, TextComponentBuilder};
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::error;
+use mchprs_world::World;
 
 pub(super) fn execute_wand(ctx: CommandExecuteContext<'_>) {
     let item = ItemStack {
@@ -1121,19 +1122,168 @@ fn most_square_factors(n: usize) -> (usize, usize) {
     (1, n)
 }
 
-pub(super) fn execute_romtile(ctx: CommandExecuteContext<'_>) {
-    let start_time = Instant::now();
-    let bit_size = ctx.arguments[0].unwrap_uint() as usize;
-    let cell_count = ctx.arguments[1].unwrap_uint() as usize;
 
-    if bit_size == 0 || cell_count == 0 {
+fn read_bits_lsb_first(bytes: &[u8], start_bit: usize, bit_count: usize) -> u32 {
+    let mut value: u32 = 0;
+
+    for bit_offset in 0..bit_count {
+        let bit_index = start_bit + bit_offset;
+        let byte_index = bit_index / 8;
+        let bit_in_byte = bit_index % 8;
+
+        let bit = (bytes[byte_index] >> bit_in_byte) & 1;
+        value |= (bit as u32) << bit_offset;
+    }
+
+    value
+}
+
+fn read_rom_weight_file(
+    path: &std::path::Path,
+    weight_bits: usize,
+) -> Result<Vec<Vec<u8>>, String> {
+    if weight_bits == 0 {
+        return Err("weight_bits must be greater than 0.".to_string());
+    }
+
+    if weight_bits > 32 {
+        return Err("weight_bits greater than 32 is not supported yet.".to_string());
+    }
+
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("Could not read binary weight file: {e}"))?;
+
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let total_bits = bytes.len() * 8;
+    let weight_count = total_bits / weight_bits;
+
+    if weight_count == 0 {
+        return Err(format!(
+            "Weight file is too small: {} byte(s) cannot contain one {}-bit weight.",
+            bytes.len(),
+            weight_bits
+        ));
+    }
+
+    // One barrel stores 4 bits.
+    // 8-bit weight  => 2 barrel layers
+    // 18-bit weight => 5 barrel layers
+    // 24-bit weight => 6 barrel layers
+    let vertical_stacks = weight_bits.div_ceil(4);
+
+    let mut weights: Vec<Vec<u8>> = Vec::with_capacity(weight_count);
+
+    for weight_index in 0..weight_count {
+        let start_bit = weight_index * weight_bits;
+        let raw_weight = read_bits_lsb_first(&bytes, start_bit, weight_bits);
+
+        let mut barrel_values: Vec<u8> = Vec::with_capacity(vertical_stacks);
+
+        for layer in 0..vertical_stacks {
+            let signal = ((raw_weight >> (layer * 4)) & 0xF) as u8;
+            barrel_values.push(signal);
+        }
+
+        weights.push(barrel_values);
+    }
+
+    Ok(weights)
+}
+
+fn inventory_for_signal(signal: u8) -> Vec<InventoryEntry> {
+    assert!(signal <= 15);
+
+    let slots = 27u32;
+
+    let items_needed = match signal {
+        0 => 0,
+        15 => slots * 64,
+        _ => ((32 * slots * signal as u32) as f32 / 7.0 - 1.0).ceil() as u32,
+    } as usize;
+
+    let mut inventory = Vec::new();
+
+    for (slot, items_added) in (0..items_needed).step_by(64).enumerate() {
+        let count = (items_needed - items_added).min(64);
+
+        inventory.push(InventoryEntry {
+            id: Item::Redstone {}.get_id(),
+            slot: slot as i8,
+            count: count as i8,
+            nbt: None,
+        });
+    }
+
+    inventory
+}
+
+fn romtile_barrel_offset(local_address: usize) -> BlockPos {
+    match local_address {
+        0 => BlockPos::new(-1, 3, -4),
+        1 => BlockPos::new(-1, 2, -6),
+        2 => BlockPos::new(1, 2, -6),
+        3 => BlockPos::new(1, 3, -4),
+        _ => unreachable!("local_address must be between 0 and 3"),
+    }
+}
+
+pub(super) fn execute_romtile_w_file(ctx: CommandExecuteContext<'_>) {
+    let start_time = Instant::now();
+
+    let weight_bits = ctx.arguments[0].unwrap_uint() as usize;
+    let file_name = ctx.arguments[1].unwrap_string().clone();
+
+    if weight_bits == 0 {
         ctx.player
-            .send_error_message("bit_size and cell_count must be greater than 0.");
+            .send_error_message("weight_bits must be greater than 0.");
         return;
     }
 
-    let vertical_stacks = bit_size.div_ceil(4);
-    let horiz_total = cell_count.div_ceil(4);
+    if weight_bits > 32 {
+        ctx.player
+            .send_error_message("weight_bits greater than 32 is not supported yet.");
+        return;
+    }
+
+    if file_name.contains("..") || file_name.contains('/') || file_name.contains('\\') {
+        ctx.player.send_error_message("Invalid weight filename.");
+        return;
+    }
+
+    let Some(origin) = ctx.player.first_position else {
+        ctx.player.send_error_message("You must set //pos1 first.");
+        return;
+    };
+
+    // One barrel stores 4 bits.
+    // weight_bits = 8  => 2 vertical layers
+    // weight_bits = 18 => 5 vertical layers, the last barrel only uses 2 meaningful bits
+    // weight_bits = 24 => 6 vertical layers
+    let vertical_stacks = weight_bits.div_ceil(4);
+
+    let path = PathBuf::from("./weights").join(&file_name);
+
+    let weights = match read_rom_weight_file(&path, weight_bits) {
+        Ok(w) => w,
+        Err(e) => {
+            ctx.player
+                .send_error_message(&format!("Failed to read ROM weight file: {e}"));
+            return;
+        }
+    };
+
+    let address_count = weights.len();
+
+    if address_count == 0 {
+        ctx.player.send_error_message("Weight file is empty.");
+        return;
+    }
+
+    // One ROM tile stores 4 addresses using 4 barrel positions.
+    let horiz_total = address_count.div_ceil(4);
     let (x_count, z_count) = most_square_factors(horiz_total);
 
     let cell_multi_color = match load_schematic_from_reader(std::io::Cursor::new(ROM_CELL_BYTES)) {
@@ -1144,59 +1294,119 @@ pub(super) fn execute_romtile(ctx: CommandExecuteContext<'_>) {
             return;
         }
     };
-    let cell_single_color = match load_schematic_from_reader(std::io::Cursor::new(ROM_CELL_SINGLE_BYTES)) {
-        Ok(c) => c,
-        Err(e) => {
-            ctx.player
-                .send_error_message(&format!("Failed to load ROM cell (single color) schematic: {e}"));
-            return;
-        }
-    };
+
+    let cell_single_color =
+        match load_schematic_from_reader(std::io::Cursor::new(ROM_CELL_SINGLE_BYTES)) {
+            Ok(c) => c,
+            Err(e) => {
+                ctx.player.send_error_message(&format!(
+                    "Failed to load ROM cell schematic: {e}"
+                ));
+                return;
+            }
+        };
 
     let mut cell = if ctx.has_flag('s') {
         cell_single_color
     } else {
         cell_multi_color
     };
-    // Zero offset so //pos1 is the exact placement corner
+
+    // Offsets used by the original ROM tile placement function.
     cell.offset_x = 2;
     cell.offset_y = -1;
     cell.offset_z = 6;
 
-    let origin = ctx.player.first_position.unwrap();
-
-    // Capture undo for the full bounding box before making any changes
+    // Save the affected region for undo.
     let undo_end = BlockPos::new(
         origin.x + (x_count as i32 - 1) * 4 + cell.size_x as i32 - 1,
         origin.y + (vertical_stacks as i32 - 1) * 2 + cell.size_y as i32 - 1,
         origin.z - (z_count as i32 - 1) * 4 + cell.size_z as i32 - 1,
     );
+
     capture_undo(ctx.plot, ctx.player, origin, undo_end);
 
+    // First, place the base ROM tile schematics.
     let positions: Vec<BlockPos> = (0..vertical_stacks)
-        .flat_map(|yi| {
+        .flat_map(|layer| {
             (0..x_count).flat_map(move |xi| {
                 (0..z_count).map(move |zi| {
                     BlockPos::new(
                         origin.x + xi as i32 * 4,
-                        origin.y + yi as i32 * 2,
+                        origin.y + layer as i32 * 2,
                         origin.z - zi as i32 * 4,
                     )
                 })
             })
         })
         .collect();
+
     for chunk in positions.chunks(5000) {
         paste_clipboard_batch(ctx.plot, &cell, chunk, true);
     }
 
+    // Then, split each binary weight into 4-bit barrel signal values.
+    // The raw signal is not written directly.
+    // Before writing to the barrel, the signal is inverted using: signal = 15 - raw_signal.
+    let mut barrels_written = 0usize;
+
+    for (address, barrel_values) in weights.iter().enumerate() {
+        // Each ROM tile stores 4 addresses.
+        let romtile_index = address / 4;
+        let local_address = address % 4;
+
+        // Convert the ROM tile index into X-Z grid coordinates.
+        let xi = romtile_index / z_count;
+        let zi = romtile_index % z_count;
+
+        for layer in 0..vertical_stacks {
+            let raw_signal = barrel_values[layer];
+            let signal = 15u8 - raw_signal;
+
+            // Each weight is stored vertically.
+            // layer 0 = lower 4 bits
+            // layer 1 = upper 4 bits
+            // layer 2 = next 4 bits, and so on.
+            let tile_origin = BlockPos::new(
+                origin.x + xi as i32 * 4,
+                origin.y + layer as i32 * 2,
+                origin.z - zi as i32 * 4,
+            );
+
+            let barrel_pos = tile_origin + romtile_barrel_offset(local_address);
+
+            let inventory = inventory_for_signal(signal);
+
+            let new_entity = BlockEntity::Container {
+                comparator_override: signal,
+                inventory,
+                ty: ContainerType::Barrel,
+            };
+
+            // Place the barrel block first.
+            ctx.plot.set_block(
+                barrel_pos,
+                Block::Barrel {
+                    open: false,
+                    facing: BlockFacing::Up,
+                },
+            );
+
+            // Then write the inventory data that produces the desired comparator output.
+            ctx.plot.set_block_entity(barrel_pos, new_entity);
+
+            barrels_written += 1;
+        }
+    }
+
     ctx.player.send_worldedit_message(&format!(
-        "ROM placed: {}×{} grid × {} layers = {} bits, {} cells. ({:?})",
+        "ROM LUT placed from binary file: {} address(es), {} bit weight, {} layer(s), {}×{} grid, {} barrel(s). Signals inverted with 15 - raw_signal. ({:?})",
+        address_count,
+        weight_bits,
+        vertical_stacks,
         x_count,
         z_count,
-        vertical_stacks * 4,
-        vertical_stacks * 4,
-        x_count * z_count * 4,
+        barrels_written,
         start_time.elapsed()
     ));
 }

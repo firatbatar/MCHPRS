@@ -743,17 +743,25 @@ static COMMANDS: LazyLock<HashMap<&'static str, WorldeditCommand>> = LazyLock::n
            ..Default::default()
         },
         "//romtile" => WorldeditCommand {
-            arguments: &[
-                argument!("bit_size", UnsignedInteger, "Desired bit depth per readable line (rounded up to nearest multiple of 4)"),
-                argument!("cell_count", UnsignedInteger, "Desired total number of cells (rounded up to nearest multiple of 4)"),
-            ],
-            flags: &[flag!('s', None, "Use the single-color cell variant")],
-            execute_fn: execute_romtile,
-            description: "Tile the embedded ROM cell schematic into a full ROM at //pos1",
-            permission_node: "mchprs.we.romtile",
-            requires_positions: true,
-            ..Default::default()
-        }
+    arguments: &[
+        argument!(
+            "bit_size",
+            UnsignedInteger,
+            "Desired bit depth per readable line. Must be a multiple of 4 because one barrel stores 4 bits"
+        ),
+        argument!(
+            "weight_file",
+            String,
+            "Weight file name inside the ./weights folder"
+        ),
+    ],
+    flags: &[flag!('s', None, "Use the single-color cell variant")],
+    execute_fn: execute_romtile_w_file,
+    description: "Tile the embedded ROM cell schematic into a ROM LUT at //pos1 using a weight file",
+    permission_node: "mchprs.we.romtile",
+    requires_positions: true,
+    ..Default::default()
+}
     }
 });
 
