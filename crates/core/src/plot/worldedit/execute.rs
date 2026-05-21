@@ -1546,9 +1546,9 @@ fn paste_tiled_addressing_part_2_yellow_at_origin(
     schematic.offset_y -= 4;
     schematic.offset_z += 1;
 
-    // 3 blocks of empty space between each addr2y.
-    let gap_x = 2;
-    let step_x = schematic.size_x as i32 + gap_x;
+    // addr2y sits on the corner edge of the addr1y base.
+    // It must follow the same 4-block X grid as the ROM tiles.
+    let step_x = 4;
 
     let mut undo_min_x = i32::MAX;
     let mut undo_min_y = i32::MAX;
@@ -1598,7 +1598,8 @@ fn paste_tiled_addressing_part_2_yellow_at_origin(
             origin.z,
         );
 
-        paste_clipboard(ctx.plot, &schematic, paste_origin, ctx.has_flag('a'));
+        // Skip air so overlapping addr2y pieces do not erase each other.
+        paste_clipboard(ctx.plot, &schematic, paste_origin, true);
     }
 
     if send_message {
@@ -1691,8 +1692,8 @@ fn paste_tiled_addressing_part_1_yellow_at_origin(
     schematic.offset_y -= 4;
     schematic.offset_z += 1;
 
-    let step_x = schematic.size_x as i32;
-    let step_z = schematic.size_z as i32;
+    let step_x = 4;
+    let step_z = 4;
 
     let mut undo_min_x = i32::MAX;
     let mut undo_min_y = i32::MAX;
@@ -1745,7 +1746,8 @@ fn paste_tiled_addressing_part_1_yellow_at_origin(
                 origin.z - z_index as i32 * step_z,
             );
 
-            paste_clipboard(ctx.plot, &schematic, paste_origin, ctx.has_flag('a'));
+            // Skip air so overlapping base tiles do not erase each other.
+            paste_clipboard(ctx.plot, &schematic, paste_origin, true);
         }
     }
 
@@ -1778,12 +1780,21 @@ pub(super) fn execute_rom_system(mut ctx: CommandExecuteContext<'_>) {
         return;
     };
 
+    // ROM system dimensions:
+    // addr1y is the base of the cube: width x depth
+    // addr2y is placed on the corner edge of that base: width only
+    // romtile is the main cube body: width x depth x vertical_stacks
+    // readline_red follows width x vertical_stacks
+    let system_width = plan.x_count;
+    let system_depth = plan.z_count;
+    let system_height = plan.vertical_stacks;
+
     let addressing_part_1_ok = paste_tiled_addressing_part_1_yellow_at_origin(
         &mut ctx,
         ADDRESSING_PART_1_YELLOW_BYTES,
         "addressing_part_1_yellow.schem",
-        plan.x_count,
-        plan.z_count,
+        system_width,
+        system_depth,
         addr_origin,
         false,
     );
@@ -1793,6 +1804,7 @@ pub(super) fn execute_rom_system(mut ctx: CommandExecuteContext<'_>) {
     }
 
     // addr2y starts 4 blocks in the positive Z direction from addr1y.
+    // It sits on the corner edge of the addr1y base.
     let addr2_origin = BlockPos::new(
         addr_origin.x,
         addr_origin.y,
@@ -1803,7 +1815,7 @@ pub(super) fn execute_rom_system(mut ctx: CommandExecuteContext<'_>) {
         &mut ctx,
         ADDRESSING_PART_2_YELLOW_BYTES,
         "addressing_part_2_yellow.schem",
-        plan.x_count,
+        system_width,
         addr2_origin,
         false,
     );
@@ -1812,6 +1824,7 @@ pub(super) fn execute_rom_system(mut ctx: CommandExecuteContext<'_>) {
         return;
     }
 
+    // ROM tiles start from the addr1y base with this offset.
     let rom_origin = BlockPos::new(
         addr_origin.x + 2,
         addr_origin.y + 4,
@@ -1822,64 +1835,65 @@ pub(super) fn execute_rom_system(mut ctx: CommandExecuteContext<'_>) {
         return;
     };
 
+    // readline_red starts relative to addr1y origin.
     let readline_origin = BlockPos::new(
-    addr_origin.x + 4,
-    addr_origin.y + 2,
-    addr_origin.z + 3,
+        addr_origin.x + 4,
+        addr_origin.y + 2,
+        addr_origin.z + 3,
+    );
+
+    let readline_ok = paste_tiled_readline_red_at_origin(
+        &mut ctx,
+        READLINE_RED_BYTES,
+        "readline_red.schem",
+        system_width,
+        system_height,
+        readline_origin,
+        false,
+    );
+
+    if !readline_ok {
+        return;
+    }
+
+    // Hex-to-bin lime converter:
+    // placed on the southwest corner of the orange ROM build.
+    // schematic origin is the top northeast corner.
+    // stacked downward in -Y direction with 2-block spacing.
+    let hex_2_bin_origin = BlockPos::new(
+    rom_origin.x + (system_width as i32 - 1) * 4 + 1,
+    rom_origin.y + (system_height as i32 - 1) * 2 + 3,
+    rom_origin.z + 2,
 );
 
-let readline_ok = paste_tiled_readline_red_at_origin(
-    &mut ctx,
-    READLINE_RED_BYTES,
-    "readline_red.schem",
-    plan.x_count,
-    plan.vertical_stacks,
-    readline_origin,
-    false,
-);
+    let hex_2_bin_ok = paste_stacked_hex_2_bin_lime_at_origin(
+        &mut ctx,
+        HEX_2_BIN_LIME_BYTES,
+        "hex-2-bin_lime.schem",
+        system_height,
+        hex_2_bin_origin,
+        false,
+    );
 
-if !readline_ok {
-    return;
-}
-
-// Hex-to-bin lime converter:
-// It is placed on the southwest corner of the orange ROM build.
-// The schematic origin is the top northeast corner.
-// It is stacked downward in the -Y direction with 2-block spacing.
-let hex_2_bin_origin = BlockPos::new(
-    rom_origin.x,
-    rom_origin.y + (plan.vertical_stacks as i32 - 1) * 2,
-    rom_origin.z,
-);
-
-let hex_2_bin_ok = paste_stacked_hex_2_bin_lime_at_origin(
-    &mut ctx,
-    HEX_2_BIN_LIME_BYTES,
-    "hex-2-bin_lime.schem",
-    plan.vertical_stacks,
-    hex_2_bin_origin,
-    false,
-);
-
-if !hex_2_bin_ok {
-    return;
-}
+    if !hex_2_bin_ok {
+        return;
+    }
 
     ctx.player.send_worldedit_message(&format!(
-    "ROM system placed: addr1y {} x {}, addr2y {} wide at +4 Z, ROM at offset +2 X, +4 Y, +1 Z, readline_red {} x {} at +4 X, +3 Z, hex-2-bin_lime stacked {} layer(s) downward from southwest orange corner, {} address(es), {} bit weight, build_depth {}, {} vertical layer(s), {} barrel(s). ({:?})",
-    plan.x_count,
-    plan.z_count,
-    plan.x_count,
-    plan.x_count,
-    plan.vertical_stacks,
-    plan.vertical_stacks,
-    plan.address_count,
-    weight_bits,
-    build_depth,
-    plan.vertical_stacks,
-    barrels_written,
-    start_time.elapsed()
-));
+        "ROM system placed: addr1y {} x {}, addr2y {} wide at +4 Z, ROM at offset +2 X, +4 Y, +1 Z, readline_red {} x {} at +4 X, +2 Y, +3 Z, hex-2-bin_lime stacked {} layer(s) downward, {} address(es), {} bit weight, build_depth {}, {} vertical layer(s), {} barrel(s). ({:?})",
+        system_width,
+        system_depth,
+        system_width,
+        system_width,
+        system_height,
+        system_height,
+        plan.address_count,
+        weight_bits,
+        build_depth,
+        system_height,
+        barrels_written,
+        start_time.elapsed()
+    ));
 }
 
 pub(super) fn execute_readline_red(mut ctx: CommandExecuteContext<'_>) {
