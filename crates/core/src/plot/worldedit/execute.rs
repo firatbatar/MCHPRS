@@ -1158,19 +1158,20 @@ fn read_rom_weight_file(
     }
 
     let total_bits = bytes.len() * 8;
-    let weight_count = total_bits / weight_bits;
 
-    if weight_count == 0 {
+    if total_bits % weight_bits != 0 {
         return Err(format!(
-            "Weight file is too small: {} byte(s) cannot contain one {}-bit weight.",
-            bytes.len(),
-            weight_bits
+            "Binary file does not contain a whole number of {}-bit weights. Total bits: {}.",
+            weight_bits,
+            total_bits
         ));
     }
 
+    let weight_count = total_bits / weight_bits;
+
     // One barrel stores 4 bits.
     // 8-bit weight  => 2 barrel layers
-    // 18-bit weight => 5 barrel layers
+    // 18-bit weight => 5 barrel layers, last layer uses only 2 meaningful bits
     // 24-bit weight => 6 barrel layers
     let vertical_stacks = weight_bits.div_ceil(4);
 
@@ -1230,48 +1231,63 @@ fn romtile_barrel_offset(local_address: usize) -> BlockPos {
     }
 }
 
-pub(super) fn execute_romtile_w_file(ctx: CommandExecuteContext<'_>) {
-    let start_time = Instant::now();
+struct RomTilePlan {
+    weights: Vec<Vec<u8>>,
+    address_count: usize,
+    vertical_stacks: usize,
+    x_count: usize,
+    z_count: usize,
+}
 
-    let weight_bits = ctx.arguments[0].unwrap_uint() as usize;
-    let file_name = ctx.arguments[1].unwrap_string().clone();
-
+fn build_romtile_plan(
+    ctx: &mut CommandExecuteContext<'_>,
+    weight_bits: usize,
+    build_depth: usize,
+    file_name: &str,
+) -> Option<RomTilePlan> {
     if weight_bits == 0 {
         ctx.player
             .send_error_message("weight_bits must be greater than 0.");
-        return;
+        return None;
     }
 
     if weight_bits > 32 {
         ctx.player
             .send_error_message("weight_bits greater than 32 is not supported yet.");
-        return;
+        return None;
+    }
+
+    if build_depth == 0 {
+        ctx.player
+            .send_error_message("build_depth must be greater than 0.");
+        return None;
+    }
+
+    if build_depth % 4 != 0 {
+        ctx.player
+            .send_error_message("build_depth must be a multiple of 4.");
+        return None;
     }
 
     if file_name.contains("..") || file_name.contains('/') || file_name.contains('\\') {
         ctx.player.send_error_message("Invalid weight filename.");
-        return;
+        return None;
     }
 
-    let Some(origin) = ctx.player.first_position else {
-        ctx.player.send_error_message("You must set //pos1 first.");
-        return;
-    };
-
-    // One barrel stores 4 bits.
-    // weight_bits = 8  => 2 vertical layers
-    // weight_bits = 18 => 5 vertical layers, the last barrel only uses 2 meaningful bits
-    // weight_bits = 24 => 6 vertical layers
     let vertical_stacks = weight_bits.div_ceil(4);
 
-    let path = PathBuf::from("./weights").join(&file_name);
+    // build_depth is measured in ROM cells.
+    // One ROM tile schematic contains 2 cells in the depth direction.
+    let z_count = build_depth / 2;
+
+    let path = PathBuf::from("./weights").join(file_name);
 
     let weights = match read_rom_weight_file(&path, weight_bits) {
         Ok(w) => w,
         Err(e) => {
             ctx.player
                 .send_error_message(&format!("Failed to read ROM weight file: {e}"));
-            return;
+            return None;
         }
     };
 
@@ -1279,19 +1295,50 @@ pub(super) fn execute_romtile_w_file(ctx: CommandExecuteContext<'_>) {
 
     if address_count == 0 {
         ctx.player.send_error_message("Weight file is empty.");
-        return;
+        return None;
     }
 
-    // One ROM tile stores 4 addresses using 4 barrel positions.
-    let horiz_total = address_count.div_ceil(4);
-    let (x_count, z_count) = most_square_factors(horiz_total);
+    if address_count % 4 != 0 {
+        ctx.player.send_error_message(&format!(
+            "Weight count must be a multiple of 4 because one ROM tile stores 4 addresses. Got {}.",
+            address_count
+        ));
+        return None;
+    }
 
+    let romtile_count = address_count / 4;
+
+    if romtile_count % z_count != 0 {
+        ctx.player.send_error_message(&format!(
+            "The binary file does not fit the requested build_depth. ROM tile count ({}) must be divisible by z_count ({}). Try another build_depth.",
+            romtile_count,
+            z_count
+        ));
+        return None;
+    }
+
+    let x_count = romtile_count / z_count;
+
+    Some(RomTilePlan {
+        weights,
+        address_count,
+        vertical_stacks,
+        x_count,
+        z_count,
+    })
+}
+
+fn paste_romtile_plan_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    origin: BlockPos,
+    plan: &RomTilePlan,
+) -> Option<usize> {
     let cell_multi_color = match load_schematic_from_reader(std::io::Cursor::new(ROM_CELL_BYTES)) {
         Ok(c) => c,
         Err(e) => {
             ctx.player
                 .send_error_message(&format!("Failed to load ROM cell schematic: {e}"));
-            return;
+            return None;
         }
     };
 
@@ -1299,10 +1346,9 @@ pub(super) fn execute_romtile_w_file(ctx: CommandExecuteContext<'_>) {
         match load_schematic_from_reader(std::io::Cursor::new(ROM_CELL_SINGLE_BYTES)) {
             Ok(c) => c,
             Err(e) => {
-                ctx.player.send_error_message(&format!(
-                    "Failed to load ROM cell schematic: {e}"
-                ));
-                return;
+                ctx.player
+                    .send_error_message(&format!("Failed to load ROM cell schematic: {e}"));
+                return None;
             }
         };
 
@@ -1312,25 +1358,23 @@ pub(super) fn execute_romtile_w_file(ctx: CommandExecuteContext<'_>) {
         cell_multi_color
     };
 
-    // Offsets used by the original ROM tile placement function.
+    // Same offsets used by the original ROM tile placement.
     cell.offset_x = 2;
     cell.offset_y = -1;
     cell.offset_z = 6;
 
-    // Save the affected region for undo.
     let undo_end = BlockPos::new(
-        origin.x + (x_count as i32 - 1) * 4 + cell.size_x as i32 - 1,
-        origin.y + (vertical_stacks as i32 - 1) * 2 + cell.size_y as i32 - 1,
-        origin.z - (z_count as i32 - 1) * 4 + cell.size_z as i32 - 1,
+        origin.x + (plan.x_count as i32 - 1) * 4 + cell.size_x as i32 - 1,
+        origin.y + (plan.vertical_stacks as i32 - 1) * 2 + cell.size_y as i32 - 1,
+        origin.z - (plan.z_count as i32 - 1) * 4 + cell.size_z as i32 - 1,
     );
 
     capture_undo(ctx.plot, ctx.player, origin, undo_end);
 
-    // First, place the base ROM tile schematics.
-    let positions: Vec<BlockPos> = (0..vertical_stacks)
+    let positions: Vec<BlockPos> = (0..plan.vertical_stacks)
         .flat_map(|layer| {
-            (0..x_count).flat_map(move |xi| {
-                (0..z_count).map(move |zi| {
+            (0..plan.x_count).flat_map(move |xi| {
+                (0..plan.z_count).map(move |zi| {
                     BlockPos::new(
                         origin.x + xi as i32 * 4,
                         origin.y + layer as i32 * 2,
@@ -1345,28 +1389,19 @@ pub(super) fn execute_romtile_w_file(ctx: CommandExecuteContext<'_>) {
         paste_clipboard_batch(ctx.plot, &cell, chunk, true);
     }
 
-    // Then, split each binary weight into 4-bit barrel signal values.
-    // The raw signal is not written directly.
-    // Before writing to the barrel, the signal is inverted using: signal = 15 - raw_signal.
     let mut barrels_written = 0usize;
 
-    for (address, barrel_values) in weights.iter().enumerate() {
-        // Each ROM tile stores 4 addresses.
+    for (address, barrel_values) in plan.weights.iter().enumerate() {
         let romtile_index = address / 4;
         let local_address = address % 4;
 
-        // Convert the ROM tile index into X-Z grid coordinates.
-        let xi = romtile_index / z_count;
-        let zi = romtile_index % z_count;
+        let xi = romtile_index / plan.z_count;
+        let zi = romtile_index % plan.z_count;
 
-        for layer in 0..vertical_stacks {
+        for layer in 0..plan.vertical_stacks {
             let raw_signal = barrel_values[layer];
             let signal = 15u8 - raw_signal;
 
-            // Each weight is stored vertically.
-            // layer 0 = lower 4 bits
-            // layer 1 = upper 4 bits
-            // layer 2 = next 4 bits, and so on.
             let tile_origin = BlockPos::new(
                 origin.x + xi as i32 * 4,
                 origin.y + layer as i32 * 2,
@@ -1383,7 +1418,6 @@ pub(super) fn execute_romtile_w_file(ctx: CommandExecuteContext<'_>) {
                 ty: ContainerType::Barrel,
             };
 
-            // Place the barrel block first.
             ctx.plot.set_block(
                 barrel_pos,
                 Block::Barrel {
@@ -1392,21 +1426,755 @@ pub(super) fn execute_romtile_w_file(ctx: CommandExecuteContext<'_>) {
                 },
             );
 
-            // Then write the inventory data that produces the desired comparator output.
             ctx.plot.set_block_entity(barrel_pos, new_entity);
 
             barrels_written += 1;
         }
     }
 
+    Some(barrels_written)
+}
+
+pub(super) fn execute_romtile_w_file(mut ctx: CommandExecuteContext<'_>) {
+    let start_time = Instant::now();
+
+    let weight_bits = ctx.arguments[0].unwrap_uint() as usize;
+    let build_depth = ctx.arguments[1].unwrap_uint() as usize;
+    let file_name = ctx.arguments[2].unwrap_string().clone();
+
+    let Some(origin) = ctx.player.first_position else {
+        ctx.player.send_error_message("You must set //pos1 first.");
+        return;
+    };
+
+    let Some(plan) = build_romtile_plan(&mut ctx, weight_bits, build_depth, &file_name) else {
+        return;
+    };
+
+    let Some(barrels_written) = paste_romtile_plan_at_origin(&mut ctx, origin, &plan) else {
+        return;
+    };
+
     ctx.player.send_worldedit_message(&format!(
-        "ROM LUT placed from binary file: {} address(es), {} bit weight, {} layer(s), {}×{} grid, {} barrel(s). Signals inverted with 15 - raw_signal. ({:?})",
-        address_count,
+        "ROM LUT placed from binary file: {} address(es), {} bit weight, build_depth {}, {} vertical layer(s), {}×{} ROM tile grid, {} barrel(s). Signals inverted with 15 - raw_signal. ({:?})",
+        plan.address_count,
         weight_bits,
-        vertical_stacks,
-        x_count,
-        z_count,
+        build_depth,
+        plan.vertical_stacks,
+        plan.x_count,
+        plan.z_count,
         barrels_written,
         start_time.elapsed()
     ));
 }
+
+const ADDRESSING_PART_1_YELLOW_BYTES: &[u8] =
+    include_bytes!("../../../assets/addressing_part_1_yellow.schem");
+
+const ADDRESSING_PART_2_YELLOW_BYTES: &[u8] =
+    include_bytes!("../../../assets/addressing_part_2_yellow.schem");
+
+    const READLINE_RED_BYTES: &[u8] =
+    include_bytes!("../../../assets/readline_red.schem");
+
+pub(super) fn execute_addressing_part_1_yellow(mut ctx: CommandExecuteContext<'_>) {
+    let width = ctx.arguments[0].unwrap_uint() as usize;
+    let depth = ctx.arguments[1].unwrap_uint() as usize;
+
+    let Some(origin) = ctx.player.first_position else {
+        ctx.player.send_error_message("You must set //pos1 first.");
+        return;
+    };
+
+    paste_tiled_addressing_part_1_yellow_at_origin(
+        &mut ctx,
+        ADDRESSING_PART_1_YELLOW_BYTES,
+        "addressing_part_1_yellow.schem",
+        width,
+        depth,
+        origin,
+        true,
+    );
+}
+
+pub(super) fn execute_addressing_part_2_yellow(mut ctx: CommandExecuteContext<'_>) {
+    let width = ctx.arguments[0].unwrap_uint() as usize;
+
+    let Some(origin) = ctx.player.first_position else {
+        ctx.player.send_error_message("You must set //pos1 first.");
+        return;
+    };
+
+    paste_tiled_addressing_part_2_yellow_at_origin(
+        &mut ctx,
+        ADDRESSING_PART_2_YELLOW_BYTES,
+        "addressing_part_2_yellow.schem",
+        width,
+        origin,
+        true,
+    );
+}
+
+fn paste_tiled_addressing_part_2_yellow_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+    width: usize,
+    origin: BlockPos,
+    send_message: bool,
+) -> bool {
+    let start_time = Instant::now();
+
+    if width == 0 {
+        ctx.player
+            .send_error_message("width must be greater than 0.");
+        return false;
+    }
+
+    let mut schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(schematic) => schematic,
+        Err(err) => {
+            ctx.player.send_error_message(&format!(
+                "Failed to load {}: {}",
+                schematic_name, err
+            ));
+            return false;
+        }
+    };
+
+    schematic.offset_x += 2;
+    schematic.offset_y -= 4;
+    schematic.offset_z += 1;
+
+    // 3 blocks of empty space between each addr2y.
+    let gap_x = 2;
+    let step_x = schematic.size_x as i32 + gap_x;
+
+    let mut undo_min_x = i32::MAX;
+    let mut undo_min_y = i32::MAX;
+    let mut undo_min_z = i32::MAX;
+
+    let mut undo_max_x = i32::MIN;
+    let mut undo_max_y = i32::MIN;
+    let mut undo_max_z = i32::MIN;
+
+    for x_index in 0..width {
+        let paste_origin = BlockPos::new(
+            origin.x + x_index as i32 * step_x,
+            origin.y,
+            origin.z,
+        );
+
+        let first_pos = BlockPos::new(
+            paste_origin.x - schematic.offset_x,
+            paste_origin.y - schematic.offset_y,
+            paste_origin.z - schematic.offset_z,
+        );
+
+        let second_pos = BlockPos::new(
+            first_pos.x + schematic.size_x as i32 - 1,
+            first_pos.y + schematic.size_y as i32 - 1,
+            first_pos.z + schematic.size_z as i32 - 1,
+        );
+
+        undo_min_x = undo_min_x.min(first_pos.x).min(second_pos.x);
+        undo_min_y = undo_min_y.min(first_pos.y).min(second_pos.y);
+        undo_min_z = undo_min_z.min(first_pos.z).min(second_pos.z);
+
+        undo_max_x = undo_max_x.max(first_pos.x).max(second_pos.x);
+        undo_max_y = undo_max_y.max(first_pos.y).max(second_pos.y);
+        undo_max_z = undo_max_z.max(first_pos.z).max(second_pos.z);
+    }
+
+    let undo_first = BlockPos::new(undo_min_x, undo_min_y, undo_min_z);
+    let undo_second = BlockPos::new(undo_max_x, undo_max_y, undo_max_z);
+
+    capture_undo(ctx.plot, ctx.player, undo_first, undo_second);
+
+    for x_index in 0..width {
+        let paste_origin = BlockPos::new(
+            origin.x + x_index as i32 * step_x,
+            origin.y,
+            origin.z,
+        );
+
+        paste_clipboard(ctx.plot, &schematic, paste_origin, ctx.has_flag('a'));
+    }
+
+    if send_message {
+        ctx.player.send_worldedit_message(&format!(
+            "Pasted {} {} time(s) along the X axis with 3 blocks of spacing. ({:?})",
+            schematic_name,
+            width,
+            start_time.elapsed()
+        ));
+    }
+
+    true
+}
+
+fn execute_embedded_schematic_at_pos1(
+    ctx: CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+) {
+    let start_time = Instant::now();
+
+    let clipboard = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(clipboard) => clipboard,
+        Err(err) => {
+            ctx.player.send_error_message(&format!(
+                "Failed to load {}: {}",
+                schematic_name, err
+            ));
+            return;
+        }
+    };
+
+    let pos1 = ctx.player.first_position.unwrap();
+    let origin = BlockPos::new(pos1.x - 2, pos1.y + 4, pos1.z - 1);
+
+    let first_pos = BlockPos::new(
+        origin.x - clipboard.offset_x,
+        origin.y - clipboard.offset_y,
+        origin.z - clipboard.offset_z,
+    );
+
+    let second_pos = BlockPos::new(
+        first_pos.x + clipboard.size_x as i32 - 1,
+        first_pos.y + clipboard.size_y as i32 - 1,
+        first_pos.z + clipboard.size_z as i32 - 1,
+    );
+
+    capture_undo(ctx.plot, ctx.player, first_pos, second_pos);
+
+    paste_clipboard(ctx.plot, &clipboard, origin, ctx.has_flag('a'));
+
+    ctx.player.send_worldedit_message(&format!(
+        "Pasted {} at //pos1. ({:?})",
+        schematic_name,
+        start_time.elapsed()
+    ));
+}
+
+fn paste_tiled_addressing_part_1_yellow_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+    width: usize,
+    depth: usize,
+    origin: BlockPos,
+    send_message: bool,
+) -> bool {
+    let start_time = Instant::now();
+
+    if width == 0 || depth == 0 {
+        ctx.player
+            .send_error_message("width and depth must be greater than 0.");
+        return false;
+    }
+
+    let mut schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(schematic) => schematic,
+        Err(err) => {
+            ctx.player.send_error_message(&format!(
+                "Failed to load {}: {}",
+                schematic_name, err
+            ));
+            return false;
+        }
+    };
+
+    // Same offset idea as romtile:
+    // keep //pos1 as the origin and adjust the schematic offset instead.
+    schematic.offset_x += 2;
+    schematic.offset_y -= 4;
+    schematic.offset_z += 1;
+
+    let step_x = schematic.size_x as i32;
+    let step_z = schematic.size_z as i32;
+
+    let mut undo_min_x = i32::MAX;
+    let mut undo_min_y = i32::MAX;
+    let mut undo_min_z = i32::MAX;
+
+    let mut undo_max_x = i32::MIN;
+    let mut undo_max_y = i32::MIN;
+    let mut undo_max_z = i32::MIN;
+
+    for x_index in 0..width {
+        for z_index in 0..depth {
+            let paste_origin = BlockPos::new(
+                origin.x + x_index as i32 * step_x,
+                origin.y,
+                origin.z - z_index as i32 * step_z,
+            );
+
+            let first_pos = BlockPos::new(
+                paste_origin.x - schematic.offset_x,
+                paste_origin.y - schematic.offset_y,
+                paste_origin.z - schematic.offset_z,
+            );
+
+            let second_pos = BlockPos::new(
+                first_pos.x + schematic.size_x as i32 - 1,
+                first_pos.y + schematic.size_y as i32 - 1,
+                first_pos.z + schematic.size_z as i32 - 1,
+            );
+
+            undo_min_x = undo_min_x.min(first_pos.x).min(second_pos.x);
+            undo_min_y = undo_min_y.min(first_pos.y).min(second_pos.y);
+            undo_min_z = undo_min_z.min(first_pos.z).min(second_pos.z);
+
+            undo_max_x = undo_max_x.max(first_pos.x).max(second_pos.x);
+            undo_max_y = undo_max_y.max(first_pos.y).max(second_pos.y);
+            undo_max_z = undo_max_z.max(first_pos.z).max(second_pos.z);
+        }
+    }
+
+    let undo_first = BlockPos::new(undo_min_x, undo_min_y, undo_min_z);
+    let undo_second = BlockPos::new(undo_max_x, undo_max_y, undo_max_z);
+
+    capture_undo(ctx.plot, ctx.player, undo_first, undo_second);
+
+    for x_index in 0..width {
+        for z_index in 0..depth {
+            let paste_origin = BlockPos::new(
+                origin.x + x_index as i32 * step_x,
+                origin.y,
+                origin.z - z_index as i32 * step_z,
+            );
+
+            paste_clipboard(ctx.plot, &schematic, paste_origin, ctx.has_flag('a'));
+        }
+    }
+
+    if send_message {
+        ctx.player.send_worldedit_message(&format!(
+            "Pasted {} as a {} x {} grid. ({:?})",
+            schematic_name,
+            width,
+            depth,
+            start_time.elapsed()
+        ));
+    }
+
+    true
+}
+
+pub(super) fn execute_rom_system(mut ctx: CommandExecuteContext<'_>) {
+    let start_time = Instant::now();
+
+    let weight_bits = ctx.arguments[0].unwrap_uint() as usize;
+    let build_depth = ctx.arguments[1].unwrap_uint() as usize;
+    let file_name = ctx.arguments[2].unwrap_string().clone();
+
+    let Some(addr_origin) = ctx.player.first_position else {
+        ctx.player.send_error_message("You must set //pos1 first.");
+        return;
+    };
+
+    let Some(plan) = build_romtile_plan(&mut ctx, weight_bits, build_depth, &file_name) else {
+        return;
+    };
+
+    let addressing_part_1_ok = paste_tiled_addressing_part_1_yellow_at_origin(
+        &mut ctx,
+        ADDRESSING_PART_1_YELLOW_BYTES,
+        "addressing_part_1_yellow.schem",
+        plan.x_count,
+        plan.z_count,
+        addr_origin,
+        false,
+    );
+
+    if !addressing_part_1_ok {
+        return;
+    }
+
+    // addr2y starts 4 blocks in the positive Z direction from addr1y.
+    let addr2_origin = BlockPos::new(
+        addr_origin.x,
+        addr_origin.y,
+        addr_origin.z + 4,
+    );
+
+    let addressing_part_2_ok = paste_tiled_addressing_part_2_yellow_at_origin(
+        &mut ctx,
+        ADDRESSING_PART_2_YELLOW_BYTES,
+        "addressing_part_2_yellow.schem",
+        plan.x_count,
+        addr2_origin,
+        false,
+    );
+
+    if !addressing_part_2_ok {
+        return;
+    }
+
+    let rom_origin = BlockPos::new(
+        addr_origin.x + 2,
+        addr_origin.y + 4,
+        addr_origin.z + 1,
+    );
+
+    let Some(barrels_written) = paste_romtile_plan_at_origin(&mut ctx, rom_origin, &plan) else {
+        return;
+    };
+
+    let readline_origin = BlockPos::new(
+    addr_origin.x + 4,
+    addr_origin.y + 2,
+    addr_origin.z + 3,
+);
+
+let readline_ok = paste_tiled_readline_red_at_origin(
+    &mut ctx,
+    READLINE_RED_BYTES,
+    "readline_red.schem",
+    plan.x_count,
+    plan.vertical_stacks,
+    readline_origin,
+    false,
+);
+
+if !readline_ok {
+    return;
+}
+
+// Hex-to-bin lime converter:
+// It is placed on the southwest corner of the orange ROM build.
+// The schematic origin is the top northeast corner.
+// It is stacked downward in the -Y direction with 2-block spacing.
+let hex_2_bin_origin = BlockPos::new(
+    rom_origin.x,
+    rom_origin.y + (plan.vertical_stacks as i32 - 1) * 2,
+    rom_origin.z,
+);
+
+let hex_2_bin_ok = paste_stacked_hex_2_bin_lime_at_origin(
+    &mut ctx,
+    HEX_2_BIN_LIME_BYTES,
+    "hex-2-bin_lime.schem",
+    plan.vertical_stacks,
+    hex_2_bin_origin,
+    false,
+);
+
+if !hex_2_bin_ok {
+    return;
+}
+
+    ctx.player.send_worldedit_message(&format!(
+    "ROM system placed: addr1y {} x {}, addr2y {} wide at +4 Z, ROM at offset +2 X, +4 Y, +1 Z, readline_red {} x {} at +4 X, +3 Z, hex-2-bin_lime stacked {} layer(s) downward from southwest orange corner, {} address(es), {} bit weight, build_depth {}, {} vertical layer(s), {} barrel(s). ({:?})",
+    plan.x_count,
+    plan.z_count,
+    plan.x_count,
+    plan.x_count,
+    plan.vertical_stacks,
+    plan.vertical_stacks,
+    plan.address_count,
+    weight_bits,
+    build_depth,
+    plan.vertical_stacks,
+    barrels_written,
+    start_time.elapsed()
+));
+}
+
+pub(super) fn execute_readline_red(mut ctx: CommandExecuteContext<'_>) {
+    let width = ctx.arguments[0].unwrap_uint() as usize;
+    let length = ctx.arguments[1].unwrap_uint() as usize;
+
+    let Some(origin) = ctx.player.first_position else {
+        ctx.player.send_error_message("You must set //pos1 first.");
+        return;
+    };
+
+    paste_tiled_readline_red_at_origin(
+        &mut ctx,
+        READLINE_RED_BYTES,
+        "readline_red.schem",
+        width,
+        length,
+        origin,
+        true,
+    );
+}
+
+fn paste_tiled_readline_red_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+    width: usize,
+    length: usize,
+    origin: BlockPos,
+    send_message: bool,
+) -> bool {
+    let start_time = Instant::now();
+
+    if width == 0 || length == 0 {
+        ctx.player
+            .send_error_message("width and length must be greater than 0.");
+        return false;
+    }
+
+    let mut schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(schematic) => schematic,
+        Err(err) => {
+            ctx.player.send_error_message(&format!(
+                "Failed to load {}: {}",
+                schematic_name, err
+            ));
+            return false;
+        }
+    };
+
+    // Same base offset logic as the other embedded schematics.
+    schematic.offset_x += 2;
+    schematic.offset_y -= 4;
+    schematic.offset_z += 1;
+
+    // readline_red copies:
+    // X direction: 4 blocks
+    // Y direction: 2 blocks upward
+    let step_x = 4;
+    let step_y = 2;
+
+    let mut undo_min_x = i32::MAX;
+    let mut undo_min_y = i32::MAX;
+    let mut undo_min_z = i32::MAX;
+
+    let mut undo_max_x = i32::MIN;
+    let mut undo_max_y = i32::MIN;
+    let mut undo_max_z = i32::MIN;
+
+    for x_index in 0..width {
+        for y_index in 0..length {
+            let paste_origin = BlockPos::new(
+                origin.x + x_index as i32 * step_x,
+                origin.y + y_index as i32 * step_y,
+                origin.z,
+            );
+
+            let first_pos = BlockPos::new(
+                paste_origin.x - schematic.offset_x,
+                paste_origin.y - schematic.offset_y,
+                paste_origin.z - schematic.offset_z,
+            );
+
+            let second_pos = BlockPos::new(
+                first_pos.x + schematic.size_x as i32 - 1,
+                first_pos.y + schematic.size_y as i32 - 1,
+                first_pos.z + schematic.size_z as i32 - 1,
+            );
+
+            undo_min_x = undo_min_x.min(first_pos.x).min(second_pos.x);
+            undo_min_y = undo_min_y.min(first_pos.y).min(second_pos.y);
+            undo_min_z = undo_min_z.min(first_pos.z).min(second_pos.z);
+
+            undo_max_x = undo_max_x.max(first_pos.x).max(second_pos.x);
+            undo_max_y = undo_max_y.max(first_pos.y).max(second_pos.y);
+            undo_max_z = undo_max_z.max(first_pos.z).max(second_pos.z);
+        }
+    }
+
+    let undo_first = BlockPos::new(undo_min_x, undo_min_y, undo_min_z);
+    let undo_second = BlockPos::new(undo_max_x, undo_max_y, undo_max_z);
+
+    capture_undo(ctx.plot, ctx.player, undo_first, undo_second);
+
+    for x_index in 0..width {
+        for y_index in 0..length {
+            let paste_origin = BlockPos::new(
+                origin.x + x_index as i32 * step_x,
+                origin.y + y_index as i32 * step_y,
+                origin.z,
+            );
+
+            // Always skip air blocks so overlapping schematics do not erase each other.
+            paste_clipboard(ctx.plot, &schematic, paste_origin, true);
+        }
+    }
+
+    if send_message {
+        ctx.player.send_worldedit_message(&format!(
+            "Pasted {} as a {} x {} grid with X offset 4 and Y offset 2. ({:?})",
+            schematic_name,
+            width,
+            length,
+            start_time.elapsed()
+        ));
+    }
+
+    true
+}
+
+const HEX_2_BIN_LIME_BYTES: &[u8] =
+    include_bytes!("../../../assets/hex-2-bin_lime.schem");
+
+    pub(super) fn execute_hex_2_bin_lime(mut ctx: CommandExecuteContext<'_>) {
+    let Some(origin) = ctx.player.first_position else {
+        ctx.player.send_error_message("You must set //pos1 first.");
+        return;
+    };
+
+    paste_hex_2_bin_lime_at_origin(
+        &mut ctx,
+        HEX_2_BIN_LIME_BYTES,
+        "hex-2-bin_lime.schem",
+        origin,
+        true,
+    );
+}
+
+fn paste_hex_2_bin_lime_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+    origin: BlockPos,
+    send_message: bool,
+) -> bool {
+    let start_time = Instant::now();
+
+    let mut schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(schematic) => schematic,
+        Err(err) => {
+            ctx.player.send_error_message(&format!(
+                "Failed to load {}: {}",
+                schematic_name, err
+            ));
+            return false;
+        }
+    };
+
+    // Same base offset logic as the other embedded schematics.
+    // This makes //pos1 behave like the logical placement origin.
+    schematic.offset_x += 2;
+    schematic.offset_y -= 4;
+    schematic.offset_z += 1;
+
+    let first_pos = BlockPos::new(
+        origin.x - schematic.offset_x,
+        origin.y - schematic.offset_y,
+        origin.z - schematic.offset_z,
+    );
+
+    let second_pos = BlockPos::new(
+        first_pos.x + schematic.size_x as i32 - 1,
+        first_pos.y + schematic.size_y as i32 - 1,
+        first_pos.z + schematic.size_z as i32 - 1,
+    );
+
+    capture_undo(ctx.plot, ctx.player, first_pos, second_pos);
+
+    // Always skip air blocks so the schematic does not erase existing circuits.
+    paste_clipboard(ctx.plot, &schematic, origin, true);
+
+    if send_message {
+        ctx.player.send_worldedit_message(&format!(
+            "Pasted {} at //pos1. ({:?})",
+            schematic_name,
+            start_time.elapsed()
+        ));
+    }
+
+    true
+}
+
+fn paste_stacked_hex_2_bin_lime_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+    layers: usize,
+    origin: BlockPos,
+    send_message: bool,
+) -> bool {
+    let start_time = Instant::now();
+
+    if layers == 0 {
+        ctx.player
+            .send_error_message("layers must be greater than 0.");
+        return false;
+    }
+
+    let schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(schematic) => schematic,
+        Err(err) => {
+            ctx.player.send_error_message(&format!(
+                "Failed to load {}: {}",
+                schematic_name, err
+            ));
+            return false;
+        }
+    };
+
+    // The schematic origin is already the top northeast corner.
+    // Do not apply the addr/readline offset correction here.
+
+    let step_y = -2;
+
+    let mut undo_min_x = i32::MAX;
+    let mut undo_min_y = i32::MAX;
+    let mut undo_min_z = i32::MAX;
+
+    let mut undo_max_x = i32::MIN;
+    let mut undo_max_y = i32::MIN;
+    let mut undo_max_z = i32::MIN;
+
+    for layer in 0..layers {
+        let paste_origin = BlockPos::new(
+            origin.x,
+            origin.y + layer as i32 * step_y,
+            origin.z,
+        );
+
+        let first_pos = BlockPos::new(
+            paste_origin.x - schematic.offset_x,
+            paste_origin.y - schematic.offset_y,
+            paste_origin.z - schematic.offset_z,
+        );
+
+        let second_pos = BlockPos::new(
+            first_pos.x + schematic.size_x as i32 - 1,
+            first_pos.y + schematic.size_y as i32 - 1,
+            first_pos.z + schematic.size_z as i32 - 1,
+        );
+
+        undo_min_x = undo_min_x.min(first_pos.x).min(second_pos.x);
+        undo_min_y = undo_min_y.min(first_pos.y).min(second_pos.y);
+        undo_min_z = undo_min_z.min(first_pos.z).min(second_pos.z);
+
+        undo_max_x = undo_max_x.max(first_pos.x).max(second_pos.x);
+        undo_max_y = undo_max_y.max(first_pos.y).max(second_pos.y);
+        undo_max_z = undo_max_z.max(first_pos.z).max(second_pos.z);
+    }
+
+    let undo_first = BlockPos::new(undo_min_x, undo_min_y, undo_min_z);
+    let undo_second = BlockPos::new(undo_max_x, undo_max_y, undo_max_z);
+
+    capture_undo(ctx.plot, ctx.player, undo_first, undo_second);
+
+    for layer in 0..layers {
+        let paste_origin = BlockPos::new(
+            origin.x,
+            origin.y + layer as i32 * step_y,
+            origin.z,
+        );
+
+        // Always skip air blocks so the converter does not erase existing circuits.
+        paste_clipboard(ctx.plot, &schematic, paste_origin, true);
+    }
+
+    if send_message {
+        ctx.player.send_worldedit_message(&format!(
+            "Pasted {} as {} layer(s) stacked in -Y with 2-block spacing. ({:?})",
+            schematic_name,
+            layers,
+            start_time.elapsed()
+        ));
+    }
+
+    true
+}
+

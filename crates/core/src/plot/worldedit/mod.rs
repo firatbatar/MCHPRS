@@ -745,15 +745,21 @@ static COMMANDS: LazyLock<HashMap<&'static str, WorldeditCommand>> = LazyLock::n
         "//romtile" => WorldeditCommand {
     arguments: &[
         argument!(
-            "bit_size",
+            "weight_bits",
             UnsignedInteger,
             "Desired bit depth per readable line. Must be a multiple of 4 because one barrel stores 4 bits"
+        ),
+        argument!(
+            "build_depth",
+            UnsignedInteger,
+            ""
         ),
         argument!(
             "weight_file",
             String,
             "Weight file name inside the ./weights folder"
         ),
+        
     ],
     flags: &[flag!('s', None, "Use the single-color cell variant")],
     execute_fn: execute_romtile_w_file,
@@ -761,7 +767,101 @@ static COMMANDS: LazyLock<HashMap<&'static str, WorldeditCommand>> = LazyLock::n
     permission_node: "mchprs.we.romtile",
     requires_positions: true,
     ..Default::default()
+    },
+            "//addr1y" => WorldeditCommand {
+    arguments: &[
+        argument!(
+            "width",
+            UnsignedInteger,
+            "How many addressing_part_1_yellow schematics to place in the X direction"
+        ),
+        argument!(
+            "depth",
+            UnsignedInteger,
+            "How many addressing_part_1_yellow schematics to place in the negative Z direction"
+        ),
+    ],
+    flags: &[flag!('a', None, "Skip air blocks")],
+    execute_fn: execute_addressing_part_1_yellow,
+    description: "Tile addressing_part_1_yellow schematic at //pos1",
+    permission_node: "mchprs.we.addressing",
+    requires_positions: true,
+    ..Default::default()
+},
+        "//addr2y" => WorldeditCommand {
+            flags: &[flag!('a', None, "Skip air blocks")],
+            execute_fn: execute_addressing_part_2_yellow,
+            description: "Paste addressing_part_2_yellow schematic at //pos1",
+            permission_node: "mchprs.we.addressing",
+            requires_positions: true,
+            ..Default::default()
+        },
+        "//rom_system" => WorldeditCommand {
+    arguments: &[
+        argument!(
+            "weight_bits",
+            UnsignedInteger,
+            "Desired bit depth per readable line"
+        ),
+        argument!(
+            "build_depth",
+            UnsignedInteger,
+            "ROM build depth. Must be a multiple of 4"
+        ),
+        argument!(
+            "weight_file",
+            String,
+            "Weight file name inside the ./weights folder"
+        ),
+    ],
+    flags: &[
+        flag!('s', None, "Use the single-color ROM cell variant"),
+        flag!('a', None, "Skip air blocks while placing the addressing schematic"),
+    ],
+    execute_fn: execute_rom_system,
+    description: "Place addr1y and ROM tiles as one combined ROM system",
+    permission_node: "mchprs.we.romsystem",
+    requires_positions: true,
+    ..Default::default()
+},
+"//addr2y" => WorldeditCommand {
+    arguments: &[
+        argument!(
+            "width",
+            UnsignedInteger,
+            "How many addressing_part_2_yellow schematics to place along the X axis"
+        ),
+    ],
+    flags: &[
+        flag!('a', None, "Do not paste air blocks"),
+    ],
+    execute_fn: execute_addressing_part_2_yellow,
+    description: "Place addressing_part_2_yellow schematics along the X axis",
+    permission_node: "mchprs.we.addr2y",
+    requires_positions: true,
+    ..Default::default()
+},
+"/readline_red" => WorldeditCommand {
+    arguments: &[
+        argument!("width", UnsignedInteger, "Number of readline_red schematics along X"),
+        argument!("length", UnsignedInteger, "Number of readline_red schematics upward along Y"),
+    ],
+    execute_fn: execute_readline_red,
+    description: "Places readline_red schematic as a width x length grid",
+    permission_node: "mchprs.we.readline_red",
+    flags: &[
+        flag!('a', None, "Skip air blocks"),
+    ],
+    ..Default::default()
+},
+"//hex2binlime" => WorldeditCommand {
+    execute_fn: execute_hex_2_bin_lime,
+    description: "Paste hex-2-bin_lime schematic at //pos1",
+    permission_node: "mchprs.we.hex2binlime",
+    requires_positions: false,
+    ..Default::default()
 }
+
     }
 });
 
