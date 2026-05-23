@@ -1133,7 +1133,7 @@ const ADDRESSING_PART_1_YELLOW_BYTES: &[u8] =
     include_bytes!("../../../assets/addressing_part_1_yellow.schem");
 const ADDRESSING_PART_2_YELLOW_BYTES: &[u8] =
     include_bytes!("../../../assets/addressing_part_2_yellow.schem");
-const READLINE_RED_BYTES: &[u8] = include_bytes!("../../../assets/readline_red.schem");
+const READLINE_RED_BYTES: &[u8] = include_bytes!("../../../assets/readline_red_v2.schem");
 const HEX_2_BIN_LIME_BYTES: &[u8] = include_bytes!("../../../assets/hex-2-bin_lime.schem");
 
 fn read_bits_lsb_first(bytes: &[u8], start_bit: usize, bit_count: usize) -> u32 {
@@ -2067,7 +2067,7 @@ pub(super) fn execute_rom_system(mut ctx: CommandExecuteContext<'_>) {
     };
 
     // readline_red follows the ROM width and vertical ROM height.
-    let readline_origin = BlockPos::new(addr_origin.x + 4, addr_origin.y + 2, addr_origin.z + 3);
+    let readline_origin = BlockPos::new(addr_origin.x + 4, addr_origin.y + 3, addr_origin.z + 3);
 
     let readline_ok = paste_tiled_readline_red_at_origin(
         &mut ctx,
