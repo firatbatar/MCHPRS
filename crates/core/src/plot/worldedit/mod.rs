@@ -860,6 +860,20 @@ static COMMANDS: LazyLock<HashMap<&'static str, WorldeditCommand>> = LazyLock::n
     permission_node: "mchprs.we.hex2binlime",
     requires_positions: false,
     ..Default::default()
+},
+"//addr3y" => WorldeditCommand {
+    execute_fn: execute_addressing_part_3_yellow,
+    description: "Paste addressing_part_3_yellow schematic at //pos1",
+    permission_node: "mchprs.we.addr3y",
+    requires_positions: false,
+    ..Default::default()
+},
+"//addr4y" => WorldeditCommand {
+    execute_fn: execute_addressing_part_4_yellow,
+    description: "Paste addressing_part_4_yellow schematic at //pos1",
+    permission_node: "mchprs.we.addr4y",
+    requires_positions: false,
+    ..Default::default()
 }
 
     }
