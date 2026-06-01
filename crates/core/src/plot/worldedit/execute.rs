@@ -1665,7 +1665,7 @@ fn paste_tiled_addressing_part_2_yellow_at_origin(
 
     // addr2y forms the second addressing strip on the corner edge of addr1y.
     // It is repeated only across the ROM width and uses the same 4-block X grid.
-    let step_x = 4;
+    let step_x = 8;
 
     let mut undo_min_x = i32::MAX;
     let mut undo_min_y = i32::MAX;
@@ -2053,13 +2053,15 @@ let addr_origin = BlockPos::new(
     }
 
     // addr2y starts four blocks in +Z from addr1y and only repeats across width.
-    let addr2_origin = BlockPos::new(addr_origin.x, addr_origin.y, addr_origin.z + 4);
+    let addr2_origin = BlockPos::new(addr_origin.x, addr_origin.y - 3, addr_origin.z + 5);
+
+    let addr2_count = system_width / 2 + 1;
 
     let addressing_part_2_ok = paste_tiled_addressing_part_2_yellow_at_origin(
         &mut ctx,
         ADDRESSING_PART_2_YELLOW_BYTES,
         "addressing_part_2_yellow.schem",
-        system_width,
+        addr2_count,
         addr2_origin,
         false,
     );
@@ -2118,10 +2120,10 @@ let addr_origin = BlockPos::new(
     // It starts from the ROM system origin with offset +1 X, -5 Y, +17 Z.
     // It extends along X together with addr2y, but only one addr3y is placed
     // for every 4 addr2y modules.
-    let addr3_count = system_width / 4;
+    let addr3_count = system_width / 4 + 1;
 
     let addr3_origin = BlockPos::new(
-        addr_origin.x + 1,
+        addr_origin.x - 3,
         addr_origin.y - 5,
         addr_origin.z + 19,
     );
@@ -2142,7 +2144,7 @@ let addr_origin = BlockPos::new(
     // addr4y is placed once relative to the current ROM system origin.
 // Offset from addr_origin: -2 X, +9 Y, +1 Z.
 let addr4_origin = BlockPos::new(
-    addr_origin.x - 1,
+    addr_origin.x - 5,
     addr_origin.y + 3,
     addr_origin.z + 19,
 );
