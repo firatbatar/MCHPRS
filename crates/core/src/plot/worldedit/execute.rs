@@ -1105,3 +1105,118 @@ pub(super) fn execute_replace_container(ctx: CommandExecuteContext<'_>) {
 pub(super) fn execute_unimplemented(_ctx: CommandExecuteContext<'_>) {
     unimplemented!("Unimplimented worldedit command");
 }
+
+// Default origin coordinates for //image_place. Change these to reposition the grid.
+const IMAGE_PLACE_DEFAULT_X: i32 = 998;
+const IMAGE_PLACE_DEFAULT_Y: i32 = 52;
+const IMAGE_PLACE_DEFAULT_Z: i32 = 962;
+
+// Reads a 784-bit (98-byte) binary file from ./images/ and stamps a 28×28 block grid into
+// the world at a fixed origin position (overridable via command arguments).
+//
+// File format
+// -----------
+// The 784 bits are laid out column-major: the first 28 bits describe column 0 (x = origin.x),
+// rows 0-27 from bottom (+y=0) to top (+y=54). Column 1 follows immediately, etc.
+// Within each byte the most-significant bit (bit 7) is consumed first.
+//
+// Block mapping
+// -------------
+//   bit = 1  →  RedstoneBlock
+//   bit = 0  →  LightGrayConcrete
+//
+// World layout
+// ------------
+// Each grid cell sits at (origin.x + col*2, origin.y + row*2, origin.z).
+// The single-block gap between adjacent cells is explicitly set to Air so that any
+// pre-existing blocks in the region are cleared. The full footprint is 55×55×1
+// (formula: (28-1)*2 + 1 = 55 per axis).
+//
+// Undo/redo
+// ---------
+// The entire 55×55×1 region is snapshotted via capture_undo before any block is written,
+// so //undo and //redo work as expected.
+pub(super) fn execute_image_place(ctx: CommandExecuteContext<'_>) {
+    // Allow only plain filenames (no path separators) to prevent directory traversal.
+    static FILE_VALIDATE_REGEX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9_.]+$").unwrap());
+
+    let file_name = ctx.arguments[0].unwrap_string().clone();
+    if !FILE_VALIDATE_REGEX.is_match(&file_name) {
+        ctx.player.send_error_message("Filename is invalid");
+        return;
+    }
+
+    // Arguments 1-3 are optional; the command definition supplies defaults from the constants above.
+    let origin = BlockPos::new(
+        ctx.arguments[1].unwrap_uint() as i32,
+        ctx.arguments[2].unwrap_uint() as i32,
+        ctx.arguments[3].unwrap_uint() as i32,
+    );
+
+    let path = PathBuf::from("./images").join(&file_name);
+    let data = match std::fs::read(&path) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            ctx.player
+                .send_error_message("The specified file could not be found.");
+            return;
+        }
+        Err(e) => {
+            error!("Error reading image_place file: {}", e);
+            ctx.player
+                .send_error_message("Error reading file. Check console for details.");
+            return;
+        }
+    };
+
+    // 28×28 = 784 bits → ceil(784/8) = 98 bytes minimum.
+    if data.len() < 98 {
+        ctx.player.send_error_message(
+            "File is too small (need exactly 784 bits / 98 bytes).",
+        );
+        return;
+    }
+
+    // Snapshot the full 55×55×1 footprint so the operation is undoable.
+    // second_pos is inclusive, so +54 gives us 55 blocks (0..=54).
+    let second_pos = BlockPos::new(origin.x + 54, origin.y + 54, origin.z);
+    capture_undo(ctx.plot, ctx.player, origin, second_pos);
+
+    // Pass 1: place the 28×28 grid blocks.
+    // col advances along +x, row advances along +y, each spaced 2 blocks apart.
+    for col in 0i32..28 {
+        for row in 0i32..28 {
+            // Linear bit index in column-major order.
+            let bit_idx = (col * 28 + row) as usize;
+            let byte_idx = bit_idx / 8;
+            // MSB of each byte is the earlier bit (bit_idx % 8 == 0 → shift 7).
+            let bit_shift = 7 - (bit_idx % 8);
+            let is_one = (data[byte_idx] >> bit_shift) & 1 == 1;
+
+            let block = if is_one {
+                Block::RedstoneBlock
+            } else {
+                Block::LightGrayConcrete
+            };
+            let pos = BlockPos::new(origin.x + col * 2, origin.y + row * 2, origin.z);
+            ctx.plot.set_block_raw(pos, block.get_id());
+        }
+    }
+
+    // Pass 2: fill every non-grid position in the 55×55 footprint with Air.
+    // Grid cells occupy even (dx, dy) offsets; odd offsets are the gaps.
+    let air_id = Block::Air.get_id();
+    for dx in 0i32..55 {
+        for dy in 0i32..55 {
+            if dx % 2 == 0 && dy % 2 == 0 {
+                continue; // grid cell — already written in pass 1
+            }
+            ctx.plot
+                .set_block_raw(BlockPos::new(origin.x + dx, origin.y + dy, origin.z), air_id);
+        }
+    }
+
+    ctx.player
+        .send_worldedit_message("Image placed successfully (784 blocks).");
+}
