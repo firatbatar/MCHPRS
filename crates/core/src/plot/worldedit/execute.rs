@@ -1107,9 +1107,9 @@ pub(super) fn execute_unimplemented(_ctx: CommandExecuteContext<'_>) {
 }
 
 // Default origin coordinates for //image_place. Change these to reposition the grid.
-const IMAGE_PLACE_DEFAULT_X: i32 = 24;
-const IMAGE_PLACE_DEFAULT_Y: i32 = 56;
-const IMAGE_PLACE_DEFAULT_Z: i32 = 17;
+const IMAGE_PLACE_DEFAULT_X: i32 = 998;
+const IMAGE_PLACE_DEFAULT_Y: i32 = 52;
+const IMAGE_PLACE_DEFAULT_Z: i32 = 962;
 
 // Reads a 784-bit (98-byte) binary file from ./images/ and stamps a 28×28 block grid into
 // the world at a fixed origin position (overridable via command arguments).
