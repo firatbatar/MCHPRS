@@ -2182,11 +2182,6 @@ fn paste_addressing_part_4_yellow_at_origin(
     true
 }
 
-// Default origin coordinates for //image_place. Change these to reposition the grid.
-const IMAGE_PLACE_DEFAULT_X: i32 = 998;
-const IMAGE_PLACE_DEFAULT_Y: i32 = 52;
-const IMAGE_PLACE_DEFAULT_Z: i32 = 962;
-
 // Reads a 784-bit (98-byte) binary file from ./images/ and stamps a 28×28 block grid into
 // the world at a fixed origin position (overridable via command arguments).
 //
@@ -2223,7 +2218,6 @@ pub(super) fn execute_image_place(ctx: CommandExecuteContext<'_>) {
         return;
     }
 
-    // Arguments 1-3 are optional; the command definition supplies defaults from the constants above.
     let origin = BlockPos::new(
         ctx.arguments[1].unwrap_uint() as i32,
         ctx.arguments[2].unwrap_uint() as i32,

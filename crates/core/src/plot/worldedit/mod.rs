@@ -799,9 +799,9 @@ static COMMANDS: LazyLock<HashMap<&'static str, WorldeditCommand>> = LazyLock::n
             "//image_place" => WorldeditCommand {
                 arguments: &[
                     argument!("file", String, "Binary file name in ./images/ (784 bits / 98 bytes)"),
-                    argument!("x", UnsignedInteger, "X coordinate of the grid origin", 24u32),
-                    argument!("y", UnsignedInteger, "Y coordinate of the grid origin", 56u32),
-                    argument!("z", UnsignedInteger, "Z coordinate of the grid origin", 17u32),
+                    argument!("x", UnsignedInteger, "X coordinate of the grid origin", 998u32),
+                    argument!("y", UnsignedInteger, "Y coordinate of the grid origin", 52u32),
+                    argument!("z", UnsignedInteger, "Z coordinate of the grid origin", 962u32),
                 ],
                 execute_fn: execute_image_place,
                 description: "Places a 28x28 bit-grid from a binary file at the given coordinates",
