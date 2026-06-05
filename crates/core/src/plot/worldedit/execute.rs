@@ -13,10 +13,10 @@ use mchprs_schematic::{
     save_schematic, WorldEditClipboard,
 };
 use mchprs_text::{ColorCode, TextComponentBuilder};
+use mchprs_world::World;
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::error;
-use mchprs_world::World;
 
 pub(super) fn execute_wand(ctx: CommandExecuteContext<'_>) {
     let item = ItemStack {
@@ -1151,7 +1151,10 @@ fn read_bits_lsb_first(bytes: &[u8], start_bit: usize, bit_count: usize) -> u32 
     value
 }
 
-fn read_rom_weight_file(path: &std::path::Path, weight_bits: usize) -> Result<Vec<Vec<u8>>, String> {
+fn read_rom_weight_file(
+    path: &std::path::Path,
+    weight_bits: usize,
+) -> Result<Vec<Vec<u8>>, String> {
     if weight_bits == 0 {
         return Err("weight_bits must be greater than 0.".to_string());
     }
@@ -1488,44 +1491,6 @@ pub(super) fn execute_romtile_w_file(mut ctx: CommandExecuteContext<'_>) {
     ));
 }
 
-pub(super) fn execute_addressing_part_1_yellow(mut ctx: CommandExecuteContext<'_>) {
-    let width = ctx.arguments[0].unwrap_uint() as usize;
-    let depth = ctx.arguments[1].unwrap_uint() as usize;
-
-    let Some(origin) = ctx.player.first_position else {
-        ctx.player.send_error_message("You must set //pos1 first.");
-        return;
-    };
-
-    paste_tiled_addressing_part_1_yellow_at_origin(
-        &mut ctx,
-        ADDRESSING_PART_1_YELLOW_BYTES,
-        "addressing_part_1_yellow.schem",
-        width,
-        depth,
-        origin,
-        true,
-    );
-}
-
-pub(super) fn execute_addressing_part_2_yellow(mut ctx: CommandExecuteContext<'_>) {
-    let width = ctx.arguments[0].unwrap_uint() as usize;
-
-    let Some(origin) = ctx.player.first_position else {
-        ctx.player.send_error_message("You must set //pos1 first.");
-        return;
-    };
-
-    paste_tiled_addressing_part_2_yellow_at_origin(
-        &mut ctx,
-        ADDRESSING_PART_2_YELLOW_BYTES,
-        "addressing_part_2_yellow.schem",
-        width,
-        origin,
-        true,
-    );
-}
-
 fn paste_tiled_addressing_part_1_yellow_at_origin(
     ctx: &mut CommandExecuteContext<'_>,
     schematic_bytes: &[u8],
@@ -1676,8 +1641,7 @@ fn paste_tiled_addressing_part_2_yellow_at_origin(
     let mut undo_max_z = i32::MIN;
 
     for x_index in 0..width {
-        let paste_origin =
-            BlockPos::new(origin.x + x_index as i32 * step_x, origin.y, origin.z);
+        let paste_origin = BlockPos::new(origin.x + x_index as i32 * step_x, origin.y, origin.z);
 
         let first_pos = BlockPos::new(
             paste_origin.x - schematic.offset_x,
@@ -1706,8 +1670,7 @@ fn paste_tiled_addressing_part_2_yellow_at_origin(
     capture_undo(ctx.plot, ctx.player, undo_first, undo_second);
 
     for x_index in 0..width {
-        let paste_origin =
-            BlockPos::new(origin.x + x_index as i32 * step_x, origin.y, origin.z);
+        let paste_origin = BlockPos::new(origin.x + x_index as i32 * step_x, origin.y, origin.z);
 
         // Skip air blocks so overlapping strips do not erase each other.
         paste_clipboard(ctx.plot, &schematic, paste_origin, true);
@@ -1723,26 +1686,6 @@ fn paste_tiled_addressing_part_2_yellow_at_origin(
     }
 
     true
-}
-
-pub(super) fn execute_readline_red(mut ctx: CommandExecuteContext<'_>) {
-    let width = ctx.arguments[0].unwrap_uint() as usize;
-    let length = ctx.arguments[1].unwrap_uint() as usize;
-
-    let Some(origin) = ctx.player.first_position else {
-        ctx.player.send_error_message("You must set //pos1 first.");
-        return;
-    };
-
-    paste_tiled_readline_red_at_origin(
-        &mut ctx,
-        READLINE_RED_BYTES,
-        "readline_red.schem",
-        width,
-        length,
-        origin,
-        true,
-    );
 }
 
 fn paste_tiled_readline_red_at_origin(
@@ -1852,73 +1795,6 @@ fn paste_tiled_readline_red_at_origin(
     true
 }
 
-pub(super) fn execute_hex_2_bin_lime(mut ctx: CommandExecuteContext<'_>) {
-    let Some(origin) = ctx.player.first_position else {
-        ctx.player.send_error_message("You must set //pos1 first.");
-        return;
-    };
-
-    paste_hex_2_bin_lime_at_origin(
-        &mut ctx,
-        HEX_2_BIN_LIME_BYTES,
-        "hex-2-bin_lime.schem",
-        origin,
-        true,
-    );
-}
-
-fn paste_hex_2_bin_lime_at_origin(
-    ctx: &mut CommandExecuteContext<'_>,
-    schematic_bytes: &[u8],
-    schematic_name: &str,
-    origin: BlockPos,
-    send_message: bool,
-) -> bool {
-    let start_time = Instant::now();
-
-    let mut schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
-        Ok(schematic) => schematic,
-        Err(err) => {
-            ctx.player
-                .send_error_message(&format!("Failed to load {}: {}", schematic_name, err));
-            return false;
-        }
-    };
-
-    // Standalone command mode uses the same logical-origin correction as the
-    // other manually placed embedded schematics.
-    schematic.offset_x += 2;
-    schematic.offset_y -= 4;
-    schematic.offset_z += 1;
-
-    let first_pos = BlockPos::new(
-        origin.x - schematic.offset_x,
-        origin.y - schematic.offset_y,
-        origin.z - schematic.offset_z,
-    );
-
-    let second_pos = BlockPos::new(
-        first_pos.x + schematic.size_x as i32 - 1,
-        first_pos.y + schematic.size_y as i32 - 1,
-        first_pos.z + schematic.size_z as i32 - 1,
-    );
-
-    capture_undo(ctx.plot, ctx.player, first_pos, second_pos);
-
-    // Skip air blocks so the converter does not erase existing circuits.
-    paste_clipboard(ctx.plot, &schematic, origin, true);
-
-    if send_message {
-        ctx.player.send_worldedit_message(&format!(
-            "Pasted {} at //pos1. ({:?})",
-            schematic_name,
-            start_time.elapsed()
-        ));
-    }
-
-    true
-}
-
 fn paste_stacked_hex_2_bin_lime_at_origin(
     ctx: &mut CommandExecuteContext<'_>,
     schematic_bytes: &[u8],
@@ -2013,18 +1889,18 @@ pub(super) fn execute_rom_system(mut ctx: CommandExecuteContext<'_>) {
     let file_name = ctx.arguments[2].unwrap_string().clone();
 
     let Some(selected_origin) = ctx.player.first_position else {
-    ctx.player.send_error_message("You must set //pos1 first.");
-    return;
-};
+        ctx.player.send_error_message("You must set //pos1 first.");
+        return;
+    };
 
-// The player selects the desired addr3y start position with //pos1.
-// addr3y is placed at addr_origin +1 X, -6 Y, +18 Z,
-// so the real ROM system origin must be shifted in the opposite direction.
-let addr_origin = BlockPos::new(
-    selected_origin.x - 2,
-    selected_origin.y + 6,
-    selected_origin.z - 18,
-);
+    // The player selects the desired addr3y start position with //pos1.
+    // addr3y is placed at addr_origin +1 X, -6 Y, +18 Z,
+    // so the real ROM system origin must be shifted in the opposite direction.
+    let addr_origin = BlockPos::new(
+        selected_origin.x - 2,
+        selected_origin.y + 6,
+        selected_origin.z - 18,
+    );
 
     let Some(plan) = build_romtile_plan(&mut ctx, weight_bits, build_depth, &file_name) else {
         return;
@@ -2116,17 +1992,13 @@ let addr_origin = BlockPos::new(
         return;
     }
 
-        // addr3y is placed in front of addr2y.
+    // addr3y is placed in front of addr2y.
     // It starts from the ROM system origin with offset +1 X, -5 Y, +17 Z.
     // It extends along X together with addr2y, but only one addr3y is placed
     // for every 4 addr2y modules.
     let addr3_count = system_width / 4 + 1;
 
-    let addr3_origin = BlockPos::new(
-        addr_origin.x - 3,
-        addr_origin.y - 5,
-        addr_origin.z + 19,
-    );
+    let addr3_origin = BlockPos::new(addr_origin.x - 3, addr_origin.y - 5, addr_origin.z + 19);
 
     let addressing_part_3_ok = paste_repeated_addressing_part_3_yellow_at_origin(
         &mut ctx,
@@ -2142,24 +2014,20 @@ let addr_origin = BlockPos::new(
     }
 
     // addr4y is placed once relative to the current ROM system origin.
-// Offset from addr_origin: -2 X, +9 Y, +1 Z.
-let addr4_origin = BlockPos::new(
-    addr_origin.x - 5,
-    addr_origin.y + 3,
-    addr_origin.z + 19,
-);
+    // Offset from addr_origin: -2 X, +9 Y, +1 Z.
+    let addr4_origin = BlockPos::new(addr_origin.x - 5, addr_origin.y + 3, addr_origin.z + 19);
 
-let addressing_part_4_ok = paste_addressing_part_4_yellow_at_origin(
-    &mut ctx,
-    ADDRESSING_PART_4_YELLOW_BYTES,
-    "addressing_part_4_yellow.schem",
-    addr4_origin,
-    false,
-);
+    let addressing_part_4_ok = paste_addressing_part_4_yellow_at_origin(
+        &mut ctx,
+        ADDRESSING_PART_4_YELLOW_BYTES,
+        "addressing_part_4_yellow.schem",
+        addr4_origin,
+        false,
+    );
 
-if !addressing_part_4_ok {
-    return;
-}
+    if !addressing_part_4_ok {
+        return;
+    }
 
     ctx.player.send_worldedit_message(&format!(
         "ROM system placed: addr1y {} x {}, addr2y {} wide at +4 Z, ROM at offset +2 X, +4 Y, +1 Z, readline_red {} x {} at +4 X, +2 Y, +3 Z, hex-2-bin_lime stacked {} layer(s) downward, {} address(es), {} bit weight, build_depth {}, {} vertical layer(s), {} barrel(s). ({:?})",
@@ -2180,67 +2048,6 @@ if !addressing_part_4_ok {
 
 const ADDRESSING_PART_3_YELLOW_BYTES: &[u8] =
     include_bytes!("../../../assets/addressing_part_3_yellow.schem");
-
-    pub(super) fn execute_addressing_part_3_yellow(mut ctx: CommandExecuteContext<'_>) {
-    let Some(origin) = ctx.player.first_position else {
-        ctx.player.send_error_message("You must set //pos1 first.");
-        return;
-    };
-
-    paste_addressing_part_3_yellow_at_origin(
-        &mut ctx,
-        ADDRESSING_PART_3_YELLOW_BYTES,
-        "addressing_part_3_yellow.schem",
-        origin,
-        true,
-    );
-}
-
-fn paste_addressing_part_3_yellow_at_origin(
-    ctx: &mut CommandExecuteContext<'_>,
-    schematic_bytes: &[u8],
-    schematic_name: &str,
-    origin: BlockPos,
-    send_message: bool,
-) -> bool {
-    let start_time = Instant::now();
-
-    let schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
-        Ok(schematic) => schematic,
-        Err(err) => {
-            ctx.player
-                .send_error_message(&format!("Failed to load {}: {}", schematic_name, err));
-            return false;
-        }
-    };
-
-    let first_pos = BlockPos::new(
-        origin.x - schematic.offset_x,
-        origin.y - schematic.offset_y,
-        origin.z - schematic.offset_z,
-    );
-
-    let second_pos = BlockPos::new(
-        first_pos.x + schematic.size_x as i32 - 1,
-        first_pos.y + schematic.size_y as i32 - 1,
-        first_pos.z + schematic.size_z as i32 - 1,
-    );
-
-    capture_undo(ctx.plot, ctx.player, first_pos, second_pos);
-
-    // Skip air blocks so the schematic does not erase existing redstone.
-    paste_clipboard(ctx.plot, &schematic, origin, true);
-
-    if send_message {
-        ctx.player.send_worldedit_message(&format!(
-            "Pasted {} at //pos1. ({:?})",
-            schematic_name,
-            start_time.elapsed()
-        ));
-    }
-
-    true
-}
 
 fn paste_repeated_addressing_part_3_yellow_at_origin(
     ctx: &mut CommandExecuteContext<'_>,
@@ -2279,11 +2086,7 @@ fn paste_repeated_addressing_part_3_yellow_at_origin(
     let mut undo_max_z = i32::MIN;
 
     for index in 0..count {
-        let paste_origin = BlockPos::new(
-            origin.x + index as i32 * step_x,
-            origin.y,
-            origin.z,
-        );
+        let paste_origin = BlockPos::new(origin.x + index as i32 * step_x, origin.y, origin.z);
 
         let first_pos = BlockPos::new(
             paste_origin.x - schematic.offset_x,
@@ -2312,11 +2115,7 @@ fn paste_repeated_addressing_part_3_yellow_at_origin(
     capture_undo(ctx.plot, ctx.player, undo_first, undo_second);
 
     for index in 0..count {
-        let paste_origin = BlockPos::new(
-            origin.x + index as i32 * step_x,
-            origin.y,
-            origin.z,
-        );
+        let paste_origin = BlockPos::new(origin.x + index as i32 * step_x, origin.y, origin.z);
 
         // Skip air blocks so addr3y does not erase addr2y or nearby wiring.
         paste_clipboard(ctx.plot, &schematic, paste_origin, true);
@@ -2336,21 +2135,6 @@ fn paste_repeated_addressing_part_3_yellow_at_origin(
 
 const ADDRESSING_PART_4_YELLOW_BYTES: &[u8] =
     include_bytes!("../../../assets/addressing_part_4_yellow.schem");
-
-pub(super) fn execute_addressing_part_4_yellow(mut ctx: CommandExecuteContext<'_>) {
-    let Some(origin) = ctx.player.first_position else {
-        ctx.player.send_error_message("You must set //pos1 first.");
-        return;
-    };
-
-    paste_addressing_part_4_yellow_at_origin(
-        &mut ctx,
-        ADDRESSING_PART_4_YELLOW_BYTES,
-        "addressing_part_4_yellow.schem",
-        origin,
-        true,
-    );
-}
 
 fn paste_addressing_part_4_yellow_at_origin(
     ctx: &mut CommandExecuteContext<'_>,

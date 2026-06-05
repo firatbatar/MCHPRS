@@ -768,34 +768,6 @@ static COMMANDS: LazyLock<HashMap<&'static str, WorldeditCommand>> = LazyLock::n
     requires_positions: true,
     ..Default::default()
     },
-            "//addr1y" => WorldeditCommand {
-    arguments: &[
-        argument!(
-            "width",
-            UnsignedInteger,
-            "How many addressing_part_1_yellow schematics to place in the X direction"
-        ),
-        argument!(
-            "depth",
-            UnsignedInteger,
-            "How many addressing_part_1_yellow schematics to place in the negative Z direction"
-        ),
-    ],
-    flags: &[flag!('a', None, "Skip air blocks")],
-    execute_fn: execute_addressing_part_1_yellow,
-    description: "Tile addressing_part_1_yellow schematic at //pos1",
-    permission_node: "mchprs.we.addressing",
-    requires_positions: true,
-    ..Default::default()
-},
-        "//addr2y" => WorldeditCommand {
-            flags: &[flag!('a', None, "Skip air blocks")],
-            execute_fn: execute_addressing_part_2_yellow,
-            description: "Paste addressing_part_2_yellow schematic at //pos1",
-            permission_node: "mchprs.we.addressing",
-            requires_positions: true,
-            ..Default::default()
-        },
         "//rom_system" => WorldeditCommand {
     arguments: &[
         argument!(
@@ -822,57 +794,6 @@ static COMMANDS: LazyLock<HashMap<&'static str, WorldeditCommand>> = LazyLock::n
     description: "Place addr1y and ROM tiles as one combined ROM system",
     permission_node: "mchprs.we.romsystem",
     requires_positions: true,
-    ..Default::default()
-},
-"//addr2y" => WorldeditCommand {
-    arguments: &[
-        argument!(
-            "width",
-            UnsignedInteger,
-            "How many addressing_part_2_yellow schematics to place along the X axis"
-        ),
-    ],
-    flags: &[
-        flag!('a', None, "Do not paste air blocks"),
-    ],
-    execute_fn: execute_addressing_part_2_yellow,
-    description: "Place addressing_part_2_yellow schematics along the X axis",
-    permission_node: "mchprs.we.addr2y",
-    requires_positions: true,
-    ..Default::default()
-},
-"/readline_red" => WorldeditCommand {
-    arguments: &[
-        argument!("width", UnsignedInteger, "Number of readline_red schematics along X"),
-        argument!("length", UnsignedInteger, "Number of readline_red schematics upward along Y"),
-    ],
-    execute_fn: execute_readline_red,
-    description: "Places readline_red schematic as a width x length grid",
-    permission_node: "mchprs.we.readline_red",
-    flags: &[
-        flag!('a', None, "Skip air blocks"),
-    ],
-    ..Default::default()
-},
-"//hex2binlime" => WorldeditCommand {
-    execute_fn: execute_hex_2_bin_lime,
-    description: "Paste hex-2-bin_lime schematic at //pos1",
-    permission_node: "mchprs.we.hex2binlime",
-    requires_positions: false,
-    ..Default::default()
-},
-"//addr3y" => WorldeditCommand {
-    execute_fn: execute_addressing_part_3_yellow,
-    description: "Paste addressing_part_3_yellow schematic at //pos1",
-    permission_node: "mchprs.we.addr3y",
-    requires_positions: false,
-    ..Default::default()
-},
-"//addr4y" => WorldeditCommand {
-    execute_fn: execute_addressing_part_4_yellow,
-    description: "Paste addressing_part_4_yellow schematic at //pos1",
-    permission_node: "mchprs.we.addr4y",
-    requires_positions: false,
     ..Default::default()
 }
 
