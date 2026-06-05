@@ -447,357 +447,369 @@ impl Default for WorldeditCommand {
 
 static COMMANDS: LazyLock<HashMap<&'static str, WorldeditCommand>> = LazyLock::new(|| {
     map! {
-        "up" => WorldeditCommand {
-            execute_fn: execute_up,
-            description: "Go upwards some distance",
-            arguments: &[
-                argument!("distance", UnsignedInteger, "Distance to go upwards")
-            ],
-            permission_node: "worldedit.navigation.up",
-            ..Default::default()
-        },
-        "ascend" => WorldeditCommand {
-            execute_fn: execute_ascend,
-            description: "Go up a floor",
-            arguments: &[
-                argument!("levels", UnsignedInteger, "# of levels to ascend")
-            ],
-            permission_node: "worldedit.navigation.ascend",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "descend" => WorldeditCommand {
-            execute_fn: execute_descend,
-            description: "Go down a floor",
-            arguments: &[
-                argument!("levels", UnsignedInteger, "# of levels to descend")
-            ],
-            permission_node: "worldedit.navigation.descend",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/pos1" => WorldeditCommand {
-            execute_fn: execute_pos1,
-            description: "Set position 1",
-            permission_node: "worldedit.selection.pos",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/pos2" => WorldeditCommand {
-            execute_fn: execute_pos2,
-            description: "Set position 2",
-            permission_node: "worldedit.selection.pos",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/hpos1" => WorldeditCommand {
-            execute_fn: execute_hpos1,
-            description: "Set position 1 to targeted block",
-            permission_node: "worldedit.selection.hpos",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/hpos2" => WorldeditCommand {
-            execute_fn: execute_hpos2,
-            description: "Set position 2 to targeted block",
-            permission_node: "worldedit.selection.hpos",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/sel" => WorldeditCommand {
-            execute_fn: execute_sel,
-            description: "Choose a region selector",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/set" => WorldeditCommand {
-            arguments: &[
-                argument!("pattern", Pattern, "The pattern of blocks to set")
-            ],
-            requires_positions: true,
-            execute_fn: execute_set,
-            description: "Sets all the blocks in the region",
-            permission_node: "worldedit.region.stack",
-            ..Default::default()
-        },
-        "/replace" => WorldeditCommand {
-            arguments: &[
-                argument!("from", Mask, "The mask representng blocks to replace"),
-                argument!("to", Pattern, "The pattern of blocks to replace with")
-            ],
-            requires_positions: true,
-            execute_fn: execute_replace,
-            description: "Replace all blocks in a selection with another",
-            permission_node: "worldedit.region.replace",
-            ..Default::default()
-        },
-        "/copy" => WorldeditCommand {
-            requires_positions: true,
-            execute_fn: execute_copy,
-            description: "Copy the selection to the clipboard",
-            permission_node: "worldedit.clipboard.copy",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/cut" => WorldeditCommand {
-            requires_positions: true,
-            execute_fn: execute_cut,
-            description: "Cut the selection to the clipboard",
-            permission_node: "worldedit.clipboard.cut",
-            ..Default::default()
-        },
-        "/paste" => WorldeditCommand {
-            requires_clipboard: true,
-            execute_fn: execute_paste,
-            description: "Paste the clipboard's contents",
-            flags: &[
-                flag!('a', None, "Skip air blocks"),
-                flag!('u', None, "Also update all affected blocks"),
-                flag!('s', None, "Select the volume of the pasted in schematic"),
-            ],
-            permission_node: "worldedit.clipboard.paste",
-            ..Default::default()
-        },
-        "/undo" => WorldeditCommand {
-            execute_fn: execute_undo,
-            description: "Undoes the last action (from history)",
-            permission_node: "worldedit.history.undo",
-            ..Default::default()
-        },
-        "/redo" => WorldeditCommand {
-            execute_fn: execute_redo,
-            description: "Redoes the last action (from history)",
-            permission_node: "worldedit.history.redo",
-            ..Default::default()
-        },
-        "/stack" => WorldeditCommand {
-            arguments: &[
-                argument!("count", UnsignedInteger, "# of copies to stack"),
-                argument!("direction", Direction, "The direction to stack")
-            ],
-            requires_positions: true,
-            execute_fn: execute_stack,
-            description: "Repeat the contents of the selection",
-            flags: &[
-                flag!('a', None, "Ignore air blocks")
-            ],
-            permission_node: "worldedit.region.stack",
-            ..Default::default()
-        },
-        "/move" => WorldeditCommand {
-            arguments: &[
-                argument!("count", UnsignedInteger, "The distance to move"),
-                argument!("direction", Direction, "The direction to move")
-            ],
-            requires_positions: true,
-            execute_fn: execute_move,
-            description: "Move the contents of the selection",
-            flags: &[
-                flag!('a', None, "Ignore air blocks"),
-                flag!('s', None, "Shift the selection to the target location")
-            ],
-            permission_node: "worldedit.region.move",
-            ..Default::default()
-        },
-        "/count" => WorldeditCommand {
-            arguments: &[
-                argument!("mask", Mask, "The mask of blocks to match")
-            ],
-            requires_positions: true,
-            execute_fn: execute_count,
-            description: "Counts the number of blocks matching a mask",
-            permission_node: "worldedit.analysis.count",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/load" => WorldeditCommand {
-            arguments: &[
-                argument!("name", String, "The file name of the schematic to load")
-            ],
-            execute_fn: execute_load,
-            description: "Loads a schematic file into the clipboard",
-            permission_node: "worldedit.clipboard.load",
-            mutates_world: false,
-            normal_completions: false,
-            ..Default::default()
-        },
-        "/save" => WorldeditCommand {
-            arguments: &[
-                argument!("name", String, "The file name of the schematic to save")
-            ],
-            requires_clipboard: true,
-            execute_fn: execute_save,
-            description: "Save a schematic file from the clipboard",
-            permission_node: "worldedit.clipboard.save",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/expand" => WorldeditCommand {
-            arguments: &[
-                argument!("amount", UnsignedInteger, "Amount to expand the selection by"),
-                argument!("direction", Direction, "Direction to expand")
-            ],
-            requires_positions: true,
-            execute_fn: execute_expand,
-            description: "Expand the selection area",
-            permission_node: "worldedit.selection.expand",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/contract" => WorldeditCommand {
-            arguments: &[
-                argument!("amount", UnsignedInteger, "Amount to contract the selection by"),
-                argument!("direction", Direction, "Direction to contract")
-            ],
-            requires_positions: true,
-            execute_fn: execute_contract,
-            description: "Contract the selection area",
-            permission_node: "worldedit.selection.contract",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/shift" => WorldeditCommand {
-            arguments: &[
-                argument!("amount", UnsignedInteger, "Amount to shift the selection by"),
-                argument!("direction", Direction, "Direction to shift")
-            ],
-            requires_positions: true,
-            execute_fn: execute_shift,
-            description: "Shift the selection area",
-            permission_node: "worldedit.selection.shift",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/flip" => WorldeditCommand {
-            arguments: &[
-                argument!("direction", Direction, "The direction to flip, defaults to look direction"),
-            ],
-            requires_clipboard: true,
-            execute_fn: execute_flip,
-            description: "Flip the contents of the clipboard across the origin",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/rotate" => WorldeditCommand {
-            arguments: &[
-                argument!("rotateY", UnsignedInteger, "Amount to rotate on the x-axis", 0),
-            ],
-            requires_clipboard: true,
-            execute_fn: execute_rotate,
-            description: "Rotate the contents of the clipboard",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/rstack" => WorldeditCommand {
-            arguments: &[
-                argument!("count", UnsignedInteger, "# of copies to stack"),
-                argument!("spacing", UnsignedInteger, "The spacing between each selection", 2),
-                argument!("direction", DirectionVector, "The direction to stack")
-            ],
-            requires_positions: true,
-            flags: &[
-                flag!('a', None, "Include air blocks"),
-                flag!('e', None, "Expand selection")
-            ],
-            execute_fn: execute_rstack,
-            description: "Like //stack but allows the stacked copies to overlap, supports more directions, and more flags",
-            permission_node: "redstonetools.rstack",
-            ..Default::default()
-        },
-        "/update" => WorldeditCommand {
-            execute_fn: execute_update,
-            description: "Updates all blocks in the selection",
-            permission_node: "mchprs.we.update",
-            requires_positions: false,
-            flags: &[
-                flag!('p', None, "Update the entire plot"),
-            ],
-            ..Default::default()
-        },
-        "/help" => WorldeditCommand {
-            arguments: &[
-                argument!("command", String, "Command to retrieve help for"),
-            ],
-            execute_fn: execute_help,
-            description: "Displays help for WorldEdit commands",
-            permission_node: "worldedit.help",
-            mutates_world: false,
-            ..Default::default()
-        },
-        "/wand" => WorldeditCommand {
-           execute_fn: execute_wand,
-           description: "Gives a WorldEdit wand",
-           permission_node: "worldedit.wand",
-            mutates_world: false,
-           ..Default::default()
-        },
-        "/replacecontainer" => WorldeditCommand {
-            arguments: &[
-                argument!("from", ContainerType, "The container type to replace"),
-                argument!("to", ContainerType, "The container type to replace with"),
-            ],
-           execute_fn: execute_replace_container,
-           description: "Replaces all container types in the selection",
-           permission_node: "mchprs.we.replacecontainer",
-           requires_positions: true,
-           ..Default::default()
-        },
-        "//romtile" => WorldeditCommand {
-    arguments: &[
-        argument!(
-            "weight_bits",
-            UnsignedInteger,
-            "Desired bit depth per readable line. Must be a multiple of 4 because one barrel stores 4 bits"
-        ),
-        argument!(
-            "build_depth",
-            UnsignedInteger,
-            ""
-        ),
-        argument!(
-            "weight_file",
-            String,
-            "Weight file name inside the ./weights folder"
-        ),
-        
-    ],
-    flags: &[flag!('s', None, "Use the single-color cell variant")],
-    execute_fn: execute_romtile_w_file,
-    description: "Tile the embedded ROM cell schematic into a ROM LUT at //pos1 using a weight file",
-    permission_node: "mchprs.we.romtile",
-    requires_positions: true,
-    ..Default::default()
-    },
-        "//rom_system" => WorldeditCommand {
-    arguments: &[
-        argument!(
-            "weight_bits",
-            UnsignedInteger,
-            "Desired bit depth per readable line"
-        ),
-        argument!(
-            "build_depth",
-            UnsignedInteger,
-            "ROM build depth. Must be a multiple of 4"
-        ),
-        argument!(
-            "weight_file",
-            String,
-            "Weight file name inside the ./weights folder"
-        ),
-    ],
-    flags: &[
-        flag!('s', None, "Use the single-color ROM cell variant"),
-        flag!('a', None, "Skip air blocks while placing the addressing schematic"),
-    ],
-    execute_fn: execute_rom_system,
-    description: "Place addr1y and ROM tiles as one combined ROM system",
-    permission_node: "mchprs.we.romsystem",
-    requires_positions: true,
-    ..Default::default()
-}
+            "up" => WorldeditCommand {
+                execute_fn: execute_up,
+                description: "Go upwards some distance",
+                arguments: &[
+                    argument!("distance", UnsignedInteger, "Distance to go upwards")
+                ],
+                permission_node: "worldedit.navigation.up",
+                ..Default::default()
+            },
+            "ascend" => WorldeditCommand {
+                execute_fn: execute_ascend,
+                description: "Go up a floor",
+                arguments: &[
+                    argument!("levels", UnsignedInteger, "# of levels to ascend")
+                ],
+                permission_node: "worldedit.navigation.ascend",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "descend" => WorldeditCommand {
+                execute_fn: execute_descend,
+                description: "Go down a floor",
+                arguments: &[
+                    argument!("levels", UnsignedInteger, "# of levels to descend")
+                ],
+                permission_node: "worldedit.navigation.descend",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/pos1" => WorldeditCommand {
+                execute_fn: execute_pos1,
+                description: "Set position 1",
+                permission_node: "worldedit.selection.pos",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/pos2" => WorldeditCommand {
+                execute_fn: execute_pos2,
+                description: "Set position 2",
+                permission_node: "worldedit.selection.pos",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/hpos1" => WorldeditCommand {
+                execute_fn: execute_hpos1,
+                description: "Set position 1 to targeted block",
+                permission_node: "worldedit.selection.hpos",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/hpos2" => WorldeditCommand {
+                execute_fn: execute_hpos2,
+                description: "Set position 2 to targeted block",
+                permission_node: "worldedit.selection.hpos",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/sel" => WorldeditCommand {
+                execute_fn: execute_sel,
+                description: "Choose a region selector",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/set" => WorldeditCommand {
+                arguments: &[
+                    argument!("pattern", Pattern, "The pattern of blocks to set")
+                ],
+                requires_positions: true,
+                execute_fn: execute_set,
+                description: "Sets all the blocks in the region",
+                permission_node: "worldedit.region.stack",
+                ..Default::default()
+            },
+            "/replace" => WorldeditCommand {
+                arguments: &[
+                    argument!("from", Mask, "The mask representng blocks to replace"),
+                    argument!("to", Pattern, "The pattern of blocks to replace with")
+                ],
+                requires_positions: true,
+                execute_fn: execute_replace,
+                description: "Replace all blocks in a selection with another",
+                permission_node: "worldedit.region.replace",
+                ..Default::default()
+            },
+            "/copy" => WorldeditCommand {
+                requires_positions: true,
+                execute_fn: execute_copy,
+                description: "Copy the selection to the clipboard",
+                permission_node: "worldedit.clipboard.copy",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/cut" => WorldeditCommand {
+                requires_positions: true,
+                execute_fn: execute_cut,
+                description: "Cut the selection to the clipboard",
+                permission_node: "worldedit.clipboard.cut",
+                ..Default::default()
+            },
+            "/paste" => WorldeditCommand {
+                requires_clipboard: true,
+                execute_fn: execute_paste,
+                description: "Paste the clipboard's contents",
+                flags: &[
+                    flag!('a', None, "Skip air blocks"),
+                    flag!('u', None, "Also update all affected blocks"),
+                    flag!('s', None, "Select the volume of the pasted in schematic"),
+                ],
+                permission_node: "worldedit.clipboard.paste",
+                ..Default::default()
+            },
+            "/undo" => WorldeditCommand {
+                execute_fn: execute_undo,
+                description: "Undoes the last action (from history)",
+                permission_node: "worldedit.history.undo",
+                ..Default::default()
+            },
+            "/redo" => WorldeditCommand {
+                execute_fn: execute_redo,
+                description: "Redoes the last action (from history)",
+                permission_node: "worldedit.history.redo",
+                ..Default::default()
+            },
+            "/stack" => WorldeditCommand {
+                arguments: &[
+                    argument!("count", UnsignedInteger, "# of copies to stack"),
+                    argument!("direction", Direction, "The direction to stack")
+                ],
+                requires_positions: true,
+                execute_fn: execute_stack,
+                description: "Repeat the contents of the selection",
+                flags: &[
+                    flag!('a', None, "Ignore air blocks")
+                ],
+                permission_node: "worldedit.region.stack",
+                ..Default::default()
+            },
+            "/move" => WorldeditCommand {
+                arguments: &[
+                    argument!("count", UnsignedInteger, "The distance to move"),
+                    argument!("direction", Direction, "The direction to move")
+                ],
+                requires_positions: true,
+                execute_fn: execute_move,
+                description: "Move the contents of the selection",
+                flags: &[
+                    flag!('a', None, "Ignore air blocks"),
+                    flag!('s', None, "Shift the selection to the target location")
+                ],
+                permission_node: "worldedit.region.move",
+                ..Default::default()
+            },
+            "/count" => WorldeditCommand {
+                arguments: &[
+                    argument!("mask", Mask, "The mask of blocks to match")
+                ],
+                requires_positions: true,
+                execute_fn: execute_count,
+                description: "Counts the number of blocks matching a mask",
+                permission_node: "worldedit.analysis.count",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/load" => WorldeditCommand {
+                arguments: &[
+                    argument!("name", String, "The file name of the schematic to load")
+                ],
+                execute_fn: execute_load,
+                description: "Loads a schematic file into the clipboard",
+                permission_node: "worldedit.clipboard.load",
+                mutates_world: false,
+                normal_completions: false,
+                ..Default::default()
+            },
+            "/save" => WorldeditCommand {
+                arguments: &[
+                    argument!("name", String, "The file name of the schematic to save")
+                ],
+                requires_clipboard: true,
+                execute_fn: execute_save,
+                description: "Save a schematic file from the clipboard",
+                permission_node: "worldedit.clipboard.save",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/expand" => WorldeditCommand {
+                arguments: &[
+                    argument!("amount", UnsignedInteger, "Amount to expand the selection by"),
+                    argument!("direction", Direction, "Direction to expand")
+                ],
+                requires_positions: true,
+                execute_fn: execute_expand,
+                description: "Expand the selection area",
+                permission_node: "worldedit.selection.expand",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/contract" => WorldeditCommand {
+                arguments: &[
+                    argument!("amount", UnsignedInteger, "Amount to contract the selection by"),
+                    argument!("direction", Direction, "Direction to contract")
+                ],
+                requires_positions: true,
+                execute_fn: execute_contract,
+                description: "Contract the selection area",
+                permission_node: "worldedit.selection.contract",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/shift" => WorldeditCommand {
+                arguments: &[
+                    argument!("amount", UnsignedInteger, "Amount to shift the selection by"),
+                    argument!("direction", Direction, "Direction to shift")
+                ],
+                requires_positions: true,
+                execute_fn: execute_shift,
+                description: "Shift the selection area",
+                permission_node: "worldedit.selection.shift",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/flip" => WorldeditCommand {
+                arguments: &[
+                    argument!("direction", Direction, "The direction to flip, defaults to look direction"),
+                ],
+                requires_clipboard: true,
+                execute_fn: execute_flip,
+                description: "Flip the contents of the clipboard across the origin",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/rotate" => WorldeditCommand {
+                arguments: &[
+                    argument!("rotateY", UnsignedInteger, "Amount to rotate on the x-axis", 0),
+                ],
+                requires_clipboard: true,
+                execute_fn: execute_rotate,
+                description: "Rotate the contents of the clipboard",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/rstack" => WorldeditCommand {
+                arguments: &[
+                    argument!("count", UnsignedInteger, "# of copies to stack"),
+                    argument!("spacing", UnsignedInteger, "The spacing between each selection", 2),
+                    argument!("direction", DirectionVector, "The direction to stack")
+                ],
+                requires_positions: true,
+                flags: &[
+                    flag!('a', None, "Include air blocks"),
+                    flag!('e', None, "Expand selection")
+                ],
+                execute_fn: execute_rstack,
+                description: "Like //stack but allows the stacked copies to overlap, supports more directions, and more flags",
+                permission_node: "redstonetools.rstack",
+                ..Default::default()
+            },
+            "/update" => WorldeditCommand {
+                execute_fn: execute_update,
+                description: "Updates all blocks in the selection",
+                permission_node: "mchprs.we.update",
+                requires_positions: false,
+                flags: &[
+                    flag!('p', None, "Update the entire plot"),
+                ],
+                ..Default::default()
+            },
+            "/help" => WorldeditCommand {
+                arguments: &[
+                    argument!("command", String, "Command to retrieve help for"),
+                ],
+                execute_fn: execute_help,
+                description: "Displays help for WorldEdit commands",
+                permission_node: "worldedit.help",
+                mutates_world: false,
+                ..Default::default()
+            },
+            "/wand" => WorldeditCommand {
+               execute_fn: execute_wand,
+               description: "Gives a WorldEdit wand",
+               permission_node: "worldedit.wand",
+                mutates_world: false,
+               ..Default::default()
+            },
+            "/replacecontainer" => WorldeditCommand {
+                arguments: &[
+                    argument!("from", ContainerType, "The container type to replace"),
+                    argument!("to", ContainerType, "The container type to replace with"),
+                ],
+               execute_fn: execute_replace_container,
+               description: "Replaces all container types in the selection",
+               permission_node: "mchprs.we.replacecontainer",
+               requires_positions: true,
+               ..Default::default()
+            },
+            "//romtile" => WorldeditCommand {
+        arguments: &[
+            argument!(
+                "weight_bits",
+                UnsignedInteger,
+                "Desired bit depth per readable line. Must be a multiple of 4 because one barrel stores 4 bits"
+            ),
+            argument!(
+                "build_depth",
+                UnsignedInteger,
+                ""
+            ),
+            argument!(
+                "weight_file",
+                String,
+                "Weight file name inside the ./weights folder"
+            ),
 
-    }
+        ],
+        flags: &[flag!('s', None, "Use the single-color cell variant")],
+        execute_fn: execute_romtile_w_file,
+        description: "Tile the embedded ROM cell schematic into a ROM LUT at //pos1 using a weight file",
+        permission_node: "mchprs.we.romtile",
+        requires_positions: true,
+        ..Default::default()
+        },
+            "//rom_system" => WorldeditCommand {
+        arguments: &[
+            argument!(
+                "weight_bits",
+                UnsignedInteger,
+                "Desired bit depth per readable line"
+            ),
+            argument!(
+                "build_depth",
+                UnsignedInteger,
+                "ROM build depth. Must be a multiple of 4"
+            ),
+            argument!(
+                "weight_file",
+                String,
+                "Weight file name inside the ./weights folder"
+            ),
+        ],
+        flags: &[
+            flag!('s', None, "Use the single-color ROM cell variant"),
+            flag!('a', None, "Skip air blocks while placing the addressing schematic"),
+        ],
+        execute_fn: execute_rom_system,
+        description: "Place addr1y and ROM tiles as one combined ROM system",
+        permission_node: "mchprs.we.romsystem",
+        requires_positions: true,
+        ..Default::default()
+    },
+            "//image_place" => WorldeditCommand {
+                arguments: &[
+                    argument!("file", String, "Binary file name in ./images/ (784 bits / 98 bytes)"),
+                    argument!("x", UnsignedInteger, "X coordinate of the grid origin", 24u32),
+                    argument!("y", UnsignedInteger, "Y coordinate of the grid origin", 56u32),
+                    argument!("z", UnsignedInteger, "Z coordinate of the grid origin", 17u32),
+                ],
+                execute_fn: execute_image_place,
+                description: "Places a 28x28 bit-grid from a binary file at the given coordinates",
+                permission_node: "mchprs.we.image_place",
+                requires_positions: false,
+                ..Default::default()
+            }
+        }
 });
 
 static ALIASES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
