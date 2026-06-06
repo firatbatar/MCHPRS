@@ -1413,11 +1413,23 @@ fn paste_romtile_plan_at_origin(
     let mut barrels_written = 0usize;
 
     for (address, barrel_values) in plan.weights.iter().enumerate() {
-        let romtile_index = address / 4;
-        let local_address = address % 4;
+        //let romtile_index = address / 4;
+        let xi = address / (plan.z_count * 4); //romtile_index / plan.z_count;
+        let zi = (address % (plan.z_count * 2)) / 2;
 
-        let xi = romtile_index / plan.z_count;
-        let zi = romtile_index % plan.z_count;
+        let local_address = match (xi % 2, (address % (plan.z_count * 2)) % 2, (address / (plan.z_count * 2)) % 2) {
+            (0, 0, 0) => 0,
+            (0, 1, 0) => 1,
+            (0, 0, 1) => 3,
+            (0, 1, 1) => 2,
+            (1, 0, 0) => 3,
+            (1, 1, 0) => 2,
+            (1, 0, 1) => 0,
+            (1, 1, 1) => 1,
+            _ => unreachable!(),
+        };
+
+        
 
         for layer in 0..plan.vertical_stacks {
             let raw_signal = barrel_values[layer];
