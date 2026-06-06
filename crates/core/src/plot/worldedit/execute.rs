@@ -8,8 +8,12 @@ use mchprs_blocks::blocks::{Block, FlipDirection, HopperFacing, RotateAmt};
 use mchprs_blocks::items::{Item, ItemStack};
 use mchprs_blocks::{BlockDirection, BlockFace, BlockFacing, BlockPos};
 use mchprs_network::packets::clientbound::*;
-use mchprs_schematic::{load_schematic, paste_clipboard, save_schematic, WorldEditClipboard};
+use mchprs_schematic::{
+    load_schematic, load_schematic_from_reader, paste_clipboard, paste_clipboard_batch,
+    save_schematic, WorldEditClipboard,
+};
 use mchprs_text::{ColorCode, TextComponentBuilder};
+use mchprs_world::World;
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::error;
@@ -1106,10 +1110,1056 @@ pub(super) fn execute_unimplemented(_ctx: CommandExecuteContext<'_>) {
     unimplemented!("Unimplimented worldedit command");
 }
 
-// Default origin coordinates for //image_place. Change these to reposition the grid.
-const IMAGE_PLACE_DEFAULT_X: i32 = 998;
-const IMAGE_PLACE_DEFAULT_Y: i32 = 52;
-const IMAGE_PLACE_DEFAULT_Z: i32 = 962;
+// -----------------------------------------------------------------------------
+// ROM system commands and helpers
+// -----------------------------------------------------------------------------
+//
+// These commands paste a ROM-based lookup table from binary weights and then add
+// the addressing, read-line, and hex-to-bin converter circuits around it.
+//
+// Coordinate convention used by the generated system:
+// - X grows to the right side of the ROM grid.
+// - Z depth grows toward negative Z.
+// - Y grows upward.
+// - One ROM tile stores four addresses.
+// - One ROM tile covers two ROM cells in depth.
+// - One vertical ROM layer stores four bits of one weight.
+
+const ROM_CELL_BYTES: &[u8] = include_bytes!("../../../assets/rom_4x4_cell.schem");
+const ROM_CELL_SINGLE_BYTES: &[u8] =
+    include_bytes!("../../../assets/rom_4x4_cell_full_orange.schem");
+
+const ADDRESSING_PART_1_YELLOW_BYTES: &[u8] =
+    include_bytes!("../../../assets/addressing_part_1_yellow.schem");
+const ADDRESSING_PART_2_YELLOW_BYTES: &[u8] =
+    include_bytes!("../../../assets/addressing_part_2_yellow.schem");
+const READLINE_RED_BYTES: &[u8] = include_bytes!("../../../assets/readline_red_v2.schem");
+const HEX_2_BIN_LIME_BYTES: &[u8] = include_bytes!("../../../assets/hex-2-bin_lime.schem");
+
+fn read_bits_lsb_first(bytes: &[u8], start_bit: usize, bit_count: usize) -> u32 {
+    let mut value: u32 = 0;
+
+    for bit_offset in 0..bit_count {
+        let bit_index = start_bit + bit_offset;
+        let byte_index = bit_index / 8;
+        let bit_in_byte = bit_index % 8;
+
+        let bit = (bytes[byte_index] >> bit_in_byte) & 1;
+        value |= (bit as u32) << bit_offset;
+    }
+
+    value
+}
+
+fn read_rom_weight_file(
+    path: &std::path::Path,
+    weight_bits: usize,
+) -> Result<Vec<Vec<u8>>, String> {
+    if weight_bits == 0 {
+        return Err("weight_bits must be greater than 0.".to_string());
+    }
+
+    if weight_bits > 32 {
+        return Err("weight_bits greater than 32 is not supported yet.".to_string());
+    }
+
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Could not read binary weight file: {e}"))?;
+
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let total_bits = bytes.len() * 8;
+
+    if total_bits % weight_bits != 0 {
+        return Err(format!(
+            "Binary file does not contain a whole number of {}-bit weights. Total bits: {}.",
+            weight_bits, total_bits
+        ));
+    }
+
+    let weight_count = total_bits / weight_bits;
+
+    // Each barrel/comparator layer can represent one 4-bit signal, from 0 to 15.
+    // Therefore an 8-bit weight needs 2 vertical layers, an 18-bit weight needs
+    // 5 vertical layers, and so on. The final layer may contain fewer than 4
+    // meaningful bits when weight_bits is not divisible by 4.
+    let vertical_stacks = weight_bits.div_ceil(4);
+
+    let mut weights: Vec<Vec<u8>> = Vec::with_capacity(weight_count);
+
+    for weight_index in 0..weight_count {
+        let start_bit = weight_index * weight_bits;
+        let raw_weight = read_bits_lsb_first(&bytes, start_bit, weight_bits);
+
+        let mut barrel_values: Vec<u8> = Vec::with_capacity(vertical_stacks);
+
+        for layer in 0..vertical_stacks {
+            let signal = ((raw_weight >> (layer * 4)) & 0xF) as u8;
+            barrel_values.push(signal);
+        }
+
+        weights.push(barrel_values);
+    }
+
+    Ok(weights)
+}
+
+fn inventory_for_signal(signal: u8) -> Vec<InventoryEntry> {
+    assert!(signal <= 15);
+
+    let slots = 27u32;
+
+    // Minecraft comparator output is determined by container fullness.
+    // This converts the target signal strength into the amount of redstone dust
+    // required in a 27-slot barrel.
+    let items_needed = match signal {
+        0 => 0,
+        15 => slots * 64,
+        _ => ((32 * slots * signal as u32) as f32 / 7.0 - 1.0).ceil() as u32,
+    } as usize;
+
+    let mut inventory = Vec::new();
+
+    for (slot, items_added) in (0..items_needed).step_by(64).enumerate() {
+        let count = (items_needed - items_added).min(64);
+
+        inventory.push(InventoryEntry {
+            id: Item::Redstone {}.get_id(),
+            slot: slot as i8,
+            count: count as i8,
+            nbt: None,
+        });
+    }
+
+    inventory
+}
+
+fn romtile_barrel_offset(local_address: usize) -> BlockPos {
+    match local_address {
+        // Four local addresses are stored inside one ROM tile schematic.
+        // These offsets point from the tile origin to the barrel that belongs
+        // to each address.
+        0 => BlockPos::new(-1, 3, -4),
+        1 => BlockPos::new(-1, 2, -6),
+        2 => BlockPos::new(1, 2, -6),
+        3 => BlockPos::new(1, 3, -4),
+        _ => unreachable!("local_address must be between 0 and 3"),
+    }
+}
+
+struct RomTilePlan {
+    weights: Vec<Vec<u8>>,
+    address_count: usize,
+    vertical_stacks: usize,
+    x_count: usize,
+    z_count: usize,
+}
+
+fn build_romtile_plan(
+    ctx: &mut CommandExecuteContext<'_>,
+    weight_bits: usize,
+    build_depth: usize,
+    file_name: &str,
+) -> Option<RomTilePlan> {
+    if weight_bits == 0 {
+        ctx.player
+            .send_error_message("weight_bits must be greater than 0.");
+        return None;
+    }
+
+    if weight_bits > 32 {
+        ctx.player
+            .send_error_message("weight_bits greater than 32 is not supported yet.");
+        return None;
+    }
+
+    if build_depth == 0 {
+        ctx.player
+            .send_error_message("build_depth must be greater than 0.");
+        return None;
+    }
+
+    if build_depth % 4 != 0 {
+        ctx.player
+            .send_error_message("build_depth must be a multiple of 4.");
+        return None;
+    }
+
+    // Keep weight files inside ./weights and prevent path traversal.
+    if file_name.contains("..") || file_name.contains('/') || file_name.contains('\\') {
+        ctx.player.send_error_message("Invalid weight filename.");
+        return None;
+    }
+
+    let vertical_stacks = weight_bits.div_ceil(4);
+
+    // build_depth is measured in ROM cells.
+    // One ROM tile schematic contains two cells in the negative-Z direction.
+    let z_count = build_depth / 2;
+
+    let path = PathBuf::from("./weights").join(file_name);
+
+    let weights = match read_rom_weight_file(&path, weight_bits) {
+        Ok(w) => w,
+        Err(e) => {
+            ctx.player
+                .send_error_message(&format!("Failed to read ROM weight file: {e}"));
+            return None;
+        }
+    };
+
+    let address_count = weights.len();
+
+    if address_count == 0 {
+        ctx.player.send_error_message("Weight file is empty.");
+        return None;
+    }
+
+    if address_count % 4 != 0 {
+        ctx.player.send_error_message(&format!(
+            "Weight count must be a multiple of 4 because one ROM tile stores 4 addresses. Got {}.",
+            address_count
+        ));
+        return None;
+    }
+
+    let romtile_count = address_count / 4;
+
+    if romtile_count % z_count != 0 {
+        ctx.player.send_error_message(&format!(
+            "The binary file does not fit the requested build_depth. ROM tile count ({}) must be divisible by z_count ({}). Try another build_depth.",
+            romtile_count,
+            z_count
+        ));
+        return None;
+    }
+
+    let x_count = romtile_count / z_count;
+
+    Some(RomTilePlan {
+        weights,
+        address_count,
+        vertical_stacks,
+        x_count,
+        z_count,
+    })
+}
+
+fn paste_romtile_plan_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    origin: BlockPos,
+    plan: &RomTilePlan,
+) -> Option<usize> {
+    let cell_multi_color = match load_schematic_from_reader(std::io::Cursor::new(ROM_CELL_BYTES)) {
+        Ok(c) => c,
+        Err(e) => {
+            ctx.player
+                .send_error_message(&format!("Failed to load ROM cell schematic: {e}"));
+            return None;
+        }
+    };
+
+    let cell_single_color =
+        match load_schematic_from_reader(std::io::Cursor::new(ROM_CELL_SINGLE_BYTES)) {
+            Ok(c) => c,
+            Err(e) => {
+                ctx.player
+                    .send_error_message(&format!("Failed to load ROM cell schematic: {e}"));
+                return None;
+            }
+        };
+
+    let mut cell = if ctx.has_flag('s') {
+        cell_single_color
+    } else {
+        cell_multi_color
+    };
+
+    // Align the schematic's internal origin with the logical ROM tile origin.
+    // This is the same placement offset used by the original standalone ROM tile
+    // command, so the system command keeps exactly the same geometry.
+    cell.offset_x = 2;
+    cell.offset_y = -1;
+    cell.offset_z = 6;
+
+    let undo_end = BlockPos::new(
+        origin.x + (plan.x_count as i32 - 1) * 4 + cell.size_x as i32 - 1,
+        origin.y + (plan.vertical_stacks as i32 - 1) * 2 + cell.size_y as i32 - 1,
+        origin.z - (plan.z_count as i32 - 1) * 4 + cell.size_z as i32 - 1,
+    );
+
+    capture_undo(ctx.plot, ctx.player, origin, undo_end);
+
+    let positions: Vec<BlockPos> = (0..plan.vertical_stacks)
+        .flat_map(|layer| {
+            (0..plan.x_count).flat_map(move |xi| {
+                (0..plan.z_count).map(move |zi| {
+                    BlockPos::new(
+                        origin.x + xi as i32 * 4,
+                        origin.y + layer as i32 * 2,
+                        origin.z - zi as i32 * 4,
+                    )
+                })
+            })
+        })
+        .collect();
+
+    for chunk in positions.chunks(5000) {
+        paste_clipboard_batch(ctx.plot, &cell, chunk, true);
+    }
+
+    let mut barrels_written = 0usize;
+
+    for (address, barrel_values) in plan.weights.iter().enumerate() {
+        //let romtile_index = address / 4;
+        let xi = address / (plan.z_count * 4); //romtile_index / plan.z_count;
+        let zi = (address % (plan.z_count * 2)) / 2;
+
+        let local_address = match (xi % 2, (address % (plan.z_count * 2)) % 2, (address / (plan.z_count * 2)) % 2) {
+            (0, 0, 0) => 0,
+            (0, 1, 0) => 1,
+            (0, 0, 1) => 3,
+            (0, 1, 1) => 2,
+            (1, 0, 0) => 3,
+            (1, 1, 0) => 2,
+            (1, 0, 1) => 0,
+            (1, 1, 1) => 1,
+            _ => unreachable!(),
+        };
+
+        
+
+        for layer in 0..plan.vertical_stacks {
+            let raw_signal = barrel_values[layer];
+
+            // The physical redstone ROM uses inverted comparator strength.
+            // A raw 0 therefore becomes 15, and a raw 15 becomes 0.
+            let signal = 15u8 - raw_signal;
+
+            let tile_origin = BlockPos::new(
+                origin.x + xi as i32 * 4,
+                origin.y + layer as i32 * 2,
+                origin.z - zi as i32 * 4,
+            );
+
+            let barrel_pos = tile_origin + romtile_barrel_offset(local_address);
+            let inventory = inventory_for_signal(signal);
+
+            let new_entity = BlockEntity::Container {
+                comparator_override: signal,
+                inventory,
+                ty: ContainerType::Barrel,
+            };
+
+            ctx.plot.set_block(
+                barrel_pos,
+                Block::Barrel {
+                    open: false,
+                    facing: BlockFacing::Up,
+                },
+            );
+
+            ctx.plot.set_block_entity(barrel_pos, new_entity);
+
+            barrels_written += 1;
+        }
+    }
+
+    Some(barrels_written)
+}
+
+fn paste_tiled_addressing_part_1_yellow_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+    width: usize,
+    depth: usize,
+    origin: BlockPos,
+    send_message: bool,
+) -> bool {
+    let start_time = Instant::now();
+
+    if width == 0 || depth == 0 {
+        ctx.player
+            .send_error_message("width and depth must be greater than 0.");
+        return false;
+    }
+
+    let mut schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(schematic) => schematic,
+        Err(err) => {
+            ctx.player
+                .send_error_message(&format!("Failed to load {}: {}", schematic_name, err));
+            return false;
+        }
+    };
+
+    // Same embedded-schematic correction used by the manually placed modules.
+    // The command receives a logical origin, then the schematic offset is shifted
+    // so the physical structure lands at the expected relative position.
+    schematic.offset_x += 2;
+    schematic.offset_y -= 4;
+    schematic.offset_z += 1;
+
+    // addr1y is the bottom addressing base of the ROM system.
+    // It follows the same ROM grid spacing: +4 on X and -4 on Z.
+    let step_x = 4;
+    let step_z = 4;
+
+    let mut undo_min_x = i32::MAX;
+    let mut undo_min_y = i32::MAX;
+    let mut undo_min_z = i32::MAX;
+
+    let mut undo_max_x = i32::MIN;
+    let mut undo_max_y = i32::MIN;
+    let mut undo_max_z = i32::MIN;
+
+    for x_index in 0..width {
+        for z_index in 0..depth {
+            let paste_origin = BlockPos::new(
+                origin.x + x_index as i32 * step_x,
+                origin.y,
+                origin.z - z_index as i32 * step_z,
+            );
+
+            let first_pos = BlockPos::new(
+                paste_origin.x - schematic.offset_x,
+                paste_origin.y - schematic.offset_y,
+                paste_origin.z - schematic.offset_z,
+            );
+
+            let second_pos = BlockPos::new(
+                first_pos.x + schematic.size_x as i32 - 1,
+                first_pos.y + schematic.size_y as i32 - 1,
+                first_pos.z + schematic.size_z as i32 - 1,
+            );
+
+            undo_min_x = undo_min_x.min(first_pos.x).min(second_pos.x);
+            undo_min_y = undo_min_y.min(first_pos.y).min(second_pos.y);
+            undo_min_z = undo_min_z.min(first_pos.z).min(second_pos.z);
+
+            undo_max_x = undo_max_x.max(first_pos.x).max(second_pos.x);
+            undo_max_y = undo_max_y.max(first_pos.y).max(second_pos.y);
+            undo_max_z = undo_max_z.max(first_pos.z).max(second_pos.z);
+        }
+    }
+
+    let undo_first = BlockPos::new(undo_min_x, undo_min_y, undo_min_z);
+    let undo_second = BlockPos::new(undo_max_x, undo_max_y, undo_max_z);
+
+    capture_undo(ctx.plot, ctx.player, undo_first, undo_second);
+
+    for x_index in 0..width {
+        for z_index in 0..depth {
+            let paste_origin = BlockPos::new(
+                origin.x + x_index as i32 * step_x,
+                origin.y,
+                origin.z - z_index as i32 * step_z,
+            );
+
+            // Skip air blocks so overlapping tiles do not erase each other.
+            paste_clipboard(ctx.plot, &schematic, paste_origin, true);
+        }
+    }
+
+    if send_message {
+        ctx.player.send_worldedit_message(&format!(
+            "Pasted {} as a {} x {} grid. ({:?})",
+            schematic_name,
+            width,
+            depth,
+            start_time.elapsed()
+        ));
+    }
+
+    true
+}
+
+fn paste_tiled_addressing_part_2_yellow_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+    width: usize,
+    origin: BlockPos,
+    send_message: bool,
+) -> bool {
+    let start_time = Instant::now();
+
+    if width == 0 {
+        ctx.player
+            .send_error_message("width must be greater than 0.");
+        return false;
+    }
+
+    let mut schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(schematic) => schematic,
+        Err(err) => {
+            ctx.player
+                .send_error_message(&format!("Failed to load {}: {}", schematic_name, err));
+            return false;
+        }
+    };
+
+    // Same embedded-schematic correction used by addr1y.
+    schematic.offset_x += 2;
+    schematic.offset_y -= 4;
+    schematic.offset_z += 1;
+
+    // addr2y forms the second addressing strip on the corner edge of addr1y.
+    // It is repeated only across the ROM width and uses the same 4-block X grid.
+    let step_x = 8;
+
+    let mut undo_min_x = i32::MAX;
+    let mut undo_min_y = i32::MAX;
+    let mut undo_min_z = i32::MAX;
+
+    let mut undo_max_x = i32::MIN;
+    let mut undo_max_y = i32::MIN;
+    let mut undo_max_z = i32::MIN;
+
+    for x_index in 0..width {
+        let paste_origin = BlockPos::new(origin.x + x_index as i32 * step_x, origin.y, origin.z);
+
+        let first_pos = BlockPos::new(
+            paste_origin.x - schematic.offset_x,
+            paste_origin.y - schematic.offset_y,
+            paste_origin.z - schematic.offset_z,
+        );
+
+        let second_pos = BlockPos::new(
+            first_pos.x + schematic.size_x as i32 - 1,
+            first_pos.y + schematic.size_y as i32 - 1,
+            first_pos.z + schematic.size_z as i32 - 1,
+        );
+
+        undo_min_x = undo_min_x.min(first_pos.x).min(second_pos.x);
+        undo_min_y = undo_min_y.min(first_pos.y).min(second_pos.y);
+        undo_min_z = undo_min_z.min(first_pos.z).min(second_pos.z);
+
+        undo_max_x = undo_max_x.max(first_pos.x).max(second_pos.x);
+        undo_max_y = undo_max_y.max(first_pos.y).max(second_pos.y);
+        undo_max_z = undo_max_z.max(first_pos.z).max(second_pos.z);
+    }
+
+    let undo_first = BlockPos::new(undo_min_x, undo_min_y, undo_min_z);
+    let undo_second = BlockPos::new(undo_max_x, undo_max_y, undo_max_z);
+
+    capture_undo(ctx.plot, ctx.player, undo_first, undo_second);
+
+    for x_index in 0..width {
+        let paste_origin = BlockPos::new(origin.x + x_index as i32 * step_x, origin.y, origin.z);
+
+        // Skip air blocks so overlapping strips do not erase each other.
+        paste_clipboard(ctx.plot, &schematic, paste_origin, true);
+    }
+
+    if send_message {
+        ctx.player.send_worldedit_message(&format!(
+            "Pasted {} {} time(s) along X with a 4-block origin step. ({:?})",
+            schematic_name,
+            width,
+            start_time.elapsed()
+        ));
+    }
+
+    true
+}
+
+fn paste_tiled_readline_red_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+    width: usize,
+    length: usize,
+    origin: BlockPos,
+    send_message: bool,
+) -> bool {
+    let start_time = Instant::now();
+
+    if width == 0 || length == 0 {
+        ctx.player
+            .send_error_message("width and length must be greater than 0.");
+        return false;
+    }
+
+    let mut schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(schematic) => schematic,
+        Err(err) => {
+            ctx.player
+                .send_error_message(&format!("Failed to load {}: {}", schematic_name, err));
+            return false;
+        }
+    };
+
+    // The readline schematic uses the same logical-origin correction as the
+    // yellow addressing schematics.
+    schematic.offset_x += 2;
+    schematic.offset_y -= 4;
+    schematic.offset_z += 1;
+
+    // readline_red is copied across ROM width and upward for each vertical ROM
+    // layer. This matches the ROM tile grid: +4 on X and +2 on Y.
+    let step_x = 4;
+    let step_y = 2;
+
+    let mut undo_min_x = i32::MAX;
+    let mut undo_min_y = i32::MAX;
+    let mut undo_min_z = i32::MAX;
+
+    let mut undo_max_x = i32::MIN;
+    let mut undo_max_y = i32::MIN;
+    let mut undo_max_z = i32::MIN;
+
+    for x_index in 0..width {
+        for y_index in 0..length {
+            let paste_origin = BlockPos::new(
+                origin.x + x_index as i32 * step_x,
+                origin.y + y_index as i32 * step_y,
+                origin.z,
+            );
+
+            let first_pos = BlockPos::new(
+                paste_origin.x - schematic.offset_x,
+                paste_origin.y - schematic.offset_y,
+                paste_origin.z - schematic.offset_z,
+            );
+
+            let second_pos = BlockPos::new(
+                first_pos.x + schematic.size_x as i32 - 1,
+                first_pos.y + schematic.size_y as i32 - 1,
+                first_pos.z + schematic.size_z as i32 - 1,
+            );
+
+            undo_min_x = undo_min_x.min(first_pos.x).min(second_pos.x);
+            undo_min_y = undo_min_y.min(first_pos.y).min(second_pos.y);
+            undo_min_z = undo_min_z.min(first_pos.z).min(second_pos.z);
+
+            undo_max_x = undo_max_x.max(first_pos.x).max(second_pos.x);
+            undo_max_y = undo_max_y.max(first_pos.y).max(second_pos.y);
+            undo_max_z = undo_max_z.max(first_pos.z).max(second_pos.z);
+        }
+    }
+
+    let undo_first = BlockPos::new(undo_min_x, undo_min_y, undo_min_z);
+    let undo_second = BlockPos::new(undo_max_x, undo_max_y, undo_max_z);
+
+    capture_undo(ctx.plot, ctx.player, undo_first, undo_second);
+
+    for x_index in 0..width {
+        for y_index in 0..length {
+            let paste_origin = BlockPos::new(
+                origin.x + x_index as i32 * step_x,
+                origin.y + y_index as i32 * step_y,
+                origin.z,
+            );
+
+            // Skip air blocks so overlapping read-line pieces do not erase
+            // neighboring redstone circuits.
+            paste_clipboard(ctx.plot, &schematic, paste_origin, true);
+        }
+    }
+
+    if send_message {
+        ctx.player.send_worldedit_message(&format!(
+            "Pasted {} as a {} x {} grid with X step 4 and Y step 2. ({:?})",
+            schematic_name,
+            width,
+            length,
+            start_time.elapsed()
+        ));
+    }
+
+    true
+}
+
+fn paste_stacked_hex_2_bin_lime_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+    layers: usize,
+    origin: BlockPos,
+    send_message: bool,
+) -> bool {
+    let start_time = Instant::now();
+
+    if layers == 0 {
+        ctx.player
+            .send_error_message("layers must be greater than 0.");
+        return false;
+    }
+
+    let schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(schematic) => schematic,
+        Err(err) => {
+            ctx.player
+                .send_error_message(&format!("Failed to load {}: {}", schematic_name, err));
+            return false;
+        }
+    };
+
+    // In the full ROM system, this schematic is already authored with its
+    // origin at the top north-east corner, so no addr/readline offset correction
+    // is applied. Each extra converter is stacked downward by two blocks.
+    let step_y = -2;
+
+    let mut undo_min_x = i32::MAX;
+    let mut undo_min_y = i32::MAX;
+    let mut undo_min_z = i32::MAX;
+
+    let mut undo_max_x = i32::MIN;
+    let mut undo_max_y = i32::MIN;
+    let mut undo_max_z = i32::MIN;
+
+    for layer in 0..layers {
+        let paste_origin = BlockPos::new(origin.x, origin.y + layer as i32 * step_y, origin.z);
+
+        let first_pos = BlockPos::new(
+            paste_origin.x - schematic.offset_x,
+            paste_origin.y - schematic.offset_y,
+            paste_origin.z - schematic.offset_z,
+        );
+
+        let second_pos = BlockPos::new(
+            first_pos.x + schematic.size_x as i32 - 1,
+            first_pos.y + schematic.size_y as i32 - 1,
+            first_pos.z + schematic.size_z as i32 - 1,
+        );
+
+        undo_min_x = undo_min_x.min(first_pos.x).min(second_pos.x);
+        undo_min_y = undo_min_y.min(first_pos.y).min(second_pos.y);
+        undo_min_z = undo_min_z.min(first_pos.z).min(second_pos.z);
+
+        undo_max_x = undo_max_x.max(first_pos.x).max(second_pos.x);
+        undo_max_y = undo_max_y.max(first_pos.y).max(second_pos.y);
+        undo_max_z = undo_max_z.max(first_pos.z).max(second_pos.z);
+    }
+
+    let undo_first = BlockPos::new(undo_min_x, undo_min_y, undo_min_z);
+    let undo_second = BlockPos::new(undo_max_x, undo_max_y, undo_max_z);
+
+    capture_undo(ctx.plot, ctx.player, undo_first, undo_second);
+
+    for layer in 0..layers {
+        let paste_origin = BlockPos::new(origin.x, origin.y + layer as i32 * step_y, origin.z);
+
+        // Skip air blocks so the converter does not erase existing circuits.
+        paste_clipboard(ctx.plot, &schematic, paste_origin, true);
+    }
+
+    if send_message {
+        ctx.player.send_worldedit_message(&format!(
+            "Pasted {} as {} layer(s) stacked in -Y with 2-block spacing. ({:?})",
+            schematic_name,
+            layers,
+            start_time.elapsed()
+        ));
+    }
+
+    true
+}
+
+pub(super) fn execute_rom_system(mut ctx: CommandExecuteContext<'_>) {
+    let start_time = Instant::now();
+
+    let weight_bits = ctx.arguments[0].unwrap_uint() as usize;
+    let build_depth = ctx.arguments[1].unwrap_uint() as usize;
+    let file_name = ctx.arguments[2].unwrap_string().clone();
+
+    let Some(selected_origin) = ctx.player.first_position else {
+        ctx.player.send_error_message("You must set //pos1 first.");
+        return;
+    };
+
+    // The player selects the desired addr3y start position with //pos1.
+    // addr3y is placed at addr_origin +1 X, -6 Y, +18 Z,
+    // so the real ROM system origin must be shifted in the opposite direction.
+    let addr_origin = BlockPos::new(
+        selected_origin.x - 2,
+        selected_origin.y + 6,
+        selected_origin.z - 18,
+    );
+
+    let Some(plan) = build_romtile_plan(&mut ctx, weight_bits, build_depth, &file_name) else {
+        return;
+    };
+
+    // The ROM plan determines the size of every schematic group:
+    // - width: number of ROM tiles on the X axis
+    // - depth: number of ROM tiles on the negative-Z axis
+    // - height: number of 4-bit layers needed for each weight
+    let system_width = plan.x_count;
+    let system_depth = plan.z_count;
+    let system_height = plan.vertical_stacks;
+
+    let addressing_part_1_ok = paste_tiled_addressing_part_1_yellow_at_origin(
+        &mut ctx,
+        ADDRESSING_PART_1_YELLOW_BYTES,
+        "addressing_part_1_yellow.schem",
+        system_width,
+        system_depth,
+        addr_origin,
+        false,
+    );
+
+    if !addressing_part_1_ok {
+        return;
+    }
+
+    // addr2y starts four blocks in +Z from addr1y and only repeats across width.
+    let addr2_origin = BlockPos::new(addr_origin.x, addr_origin.y - 3, addr_origin.z + 5);
+
+    let addr2_count = system_width / 2 + 1;
+
+    let addressing_part_2_ok = paste_tiled_addressing_part_2_yellow_at_origin(
+        &mut ctx,
+        ADDRESSING_PART_2_YELLOW_BYTES,
+        "addressing_part_2_yellow.schem",
+        addr2_count,
+        addr2_origin,
+        false,
+    );
+
+    if !addressing_part_2_ok {
+        return;
+    }
+
+    // ROM tiles are positioned above and slightly forward from the addr1y base.
+    let rom_origin = BlockPos::new(addr_origin.x + 2, addr_origin.y + 4, addr_origin.z + 1);
+
+    let Some(barrels_written) = paste_romtile_plan_at_origin(&mut ctx, rom_origin, &plan) else {
+        return;
+    };
+
+    // readline_red follows the ROM width and vertical ROM height.
+    let readline_origin = BlockPos::new(addr_origin.x + 4, addr_origin.y + 3, addr_origin.z + 3);
+
+    let readline_ok = paste_tiled_readline_red_at_origin(
+        &mut ctx,
+        READLINE_RED_BYTES,
+        "readline_red.schem",
+        system_width,
+        system_height,
+        readline_origin,
+        false,
+    );
+
+    if !readline_ok {
+        return;
+    }
+
+    // Hex-to-bin lime converter is placed on the right side of the orange ROM
+    // body. Its origin is the top north-east corner of the schematic, and each
+    // additional copy is stacked downward in -Y by two blocks.
+    let hex_2_bin_origin = BlockPos::new(
+        rom_origin.x + (system_width as i32 - 1) * 4 + 1,
+        rom_origin.y + (system_height as i32 - 1) * 2 + 3,
+        rom_origin.z + 2,
+    );
+
+    let hex_2_bin_ok = paste_stacked_hex_2_bin_lime_at_origin(
+        &mut ctx,
+        HEX_2_BIN_LIME_BYTES,
+        "hex-2-bin_lime.schem",
+        system_height,
+        hex_2_bin_origin,
+        false,
+    );
+
+    if !hex_2_bin_ok {
+        return;
+    }
+
+    // addr3y is placed in front of addr2y.
+    // It starts from the ROM system origin with offset +1 X, -5 Y, +17 Z.
+    // It extends along X together with addr2y, but only one addr3y is placed
+    // for every 4 addr2y modules.
+    let addr3_count = system_width / 4 + 1;
+
+    let addr3_origin = BlockPos::new(addr_origin.x - 3, addr_origin.y - 5, addr_origin.z + 19);
+
+    let addressing_part_3_ok = paste_repeated_addressing_part_3_yellow_at_origin(
+        &mut ctx,
+        ADDRESSING_PART_3_YELLOW_BYTES,
+        "addressing_part_3_yellow.schem",
+        addr3_count,
+        addr3_origin,
+        false,
+    );
+
+    if !addressing_part_3_ok {
+        return;
+    }
+
+    // addr4y is placed once relative to the current ROM system origin.
+    // Offset from addr_origin: -2 X, +9 Y, +1 Z.
+    let addr4_origin = BlockPos::new(addr_origin.x - 5, addr_origin.y + 3, addr_origin.z + 19);
+
+    let addressing_part_4_ok = paste_addressing_part_4_yellow_at_origin(
+        &mut ctx,
+        ADDRESSING_PART_4_YELLOW_BYTES,
+        "addressing_part_4_yellow.schem",
+        addr4_origin,
+        false,
+    );
+
+    if !addressing_part_4_ok {
+        return;
+    }
+
+    ctx.player.send_worldedit_message(&format!(
+        "ROM system placed: addr1y {} x {}, addr2y {} wide at +4 Z, ROM at offset +2 X, +4 Y, +1 Z, readline_red {} x {} at +4 X, +2 Y, +3 Z, hex-2-bin_lime stacked {} layer(s) downward, {} address(es), {} bit weight, build_depth {}, {} vertical layer(s), {} barrel(s). ({:?})",
+        system_width,
+        system_depth,
+        system_width,
+        system_width,
+        system_height,
+        system_height,
+        plan.address_count,
+        weight_bits,
+        build_depth,
+        system_height,
+        barrels_written,
+        start_time.elapsed()
+    ));
+}
+
+const ADDRESSING_PART_3_YELLOW_BYTES: &[u8] =
+    include_bytes!("../../../assets/addressing_part_3_yellow.schem");
+
+fn paste_repeated_addressing_part_3_yellow_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+    count: usize,
+    origin: BlockPos,
+    send_message: bool,
+) -> bool {
+    let start_time = Instant::now();
+
+    if count == 0 {
+        return true;
+    }
+
+    let schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(schematic) => schematic,
+        Err(err) => {
+            ctx.player
+                .send_error_message(&format!("Failed to load {}: {}", schematic_name, err));
+            return false;
+        }
+    };
+
+    // Do not apply any extra offset correction here.
+    // addr3y must use its own saved schematic origin exactly.
+
+    let step_x = 16; // 4 addr2y * 4 blocks per addr2y origin step
+
+    let mut undo_min_x = i32::MAX;
+    let mut undo_min_y = i32::MAX;
+    let mut undo_min_z = i32::MAX;
+
+    let mut undo_max_x = i32::MIN;
+    let mut undo_max_y = i32::MIN;
+    let mut undo_max_z = i32::MIN;
+
+    for index in 0..count {
+        let paste_origin = BlockPos::new(origin.x + index as i32 * step_x, origin.y, origin.z);
+
+        let first_pos = BlockPos::new(
+            paste_origin.x - schematic.offset_x,
+            paste_origin.y - schematic.offset_y,
+            paste_origin.z - schematic.offset_z,
+        );
+
+        let second_pos = BlockPos::new(
+            first_pos.x + schematic.size_x as i32 - 1,
+            first_pos.y + schematic.size_y as i32 - 1,
+            first_pos.z + schematic.size_z as i32 - 1,
+        );
+
+        undo_min_x = undo_min_x.min(first_pos.x).min(second_pos.x);
+        undo_min_y = undo_min_y.min(first_pos.y).min(second_pos.y);
+        undo_min_z = undo_min_z.min(first_pos.z).min(second_pos.z);
+
+        undo_max_x = undo_max_x.max(first_pos.x).max(second_pos.x);
+        undo_max_y = undo_max_y.max(first_pos.y).max(second_pos.y);
+        undo_max_z = undo_max_z.max(first_pos.z).max(second_pos.z);
+    }
+
+    let undo_first = BlockPos::new(undo_min_x, undo_min_y, undo_min_z);
+    let undo_second = BlockPos::new(undo_max_x, undo_max_y, undo_max_z);
+
+    capture_undo(ctx.plot, ctx.player, undo_first, undo_second);
+
+    for index in 0..count {
+        let paste_origin = BlockPos::new(origin.x + index as i32 * step_x, origin.y, origin.z);
+
+        // Skip air blocks so addr3y does not erase addr2y or nearby wiring.
+        paste_clipboard(ctx.plot, &schematic, paste_origin, true);
+    }
+
+    if send_message {
+        ctx.player.send_worldedit_message(&format!(
+            "Pasted {} {} time(s), one after every 4 addr2y modules, with X step 16. ({:?})",
+            schematic_name,
+            count,
+            start_time.elapsed()
+        ));
+    }
+
+    true
+}
+
+const ADDRESSING_PART_4_YELLOW_BYTES: &[u8] =
+    include_bytes!("../../../assets/addressing_part_4_yellow.schem");
+
+fn paste_addressing_part_4_yellow_at_origin(
+    ctx: &mut CommandExecuteContext<'_>,
+    schematic_bytes: &[u8],
+    schematic_name: &str,
+    origin: BlockPos,
+    send_message: bool,
+) -> bool {
+    let start_time = Instant::now();
+
+    let schematic = match load_schematic_from_reader(std::io::Cursor::new(schematic_bytes)) {
+        Ok(schematic) => schematic,
+        Err(err) => {
+            ctx.player
+                .send_error_message(&format!("Failed to load {}: {}", schematic_name, err));
+            return false;
+        }
+    };
+
+    let first_pos = BlockPos::new(
+        origin.x - schematic.offset_x,
+        origin.y - schematic.offset_y,
+        origin.z - schematic.offset_z,
+    );
+
+    let second_pos = BlockPos::new(
+        first_pos.x + schematic.size_x as i32 - 1,
+        first_pos.y + schematic.size_y as i32 - 1,
+        first_pos.z + schematic.size_z as i32 - 1,
+    );
+
+    capture_undo(ctx.plot, ctx.player, first_pos, second_pos);
+
+    // Skip air blocks so the schematic does not erase existing redstone.
+    paste_clipboard(ctx.plot, &schematic, origin, true);
+
+    if send_message {
+        ctx.player.send_worldedit_message(&format!(
+            "Pasted {} at //pos1. ({:?})",
+            schematic_name,
+            start_time.elapsed()
+        ));
+    }
+
+    true
+}
 
 // Reads a 784-bit (98-byte) binary file from ./images/ and stamps a 28×28 block grid into
 // the world at a fixed origin position (overridable via command arguments).
@@ -1147,7 +2197,6 @@ pub(super) fn execute_image_place(ctx: CommandExecuteContext<'_>) {
         return;
     }
 
-    // Arguments 1-3 are optional; the command definition supplies defaults from the constants above.
     let origin = BlockPos::new(
         ctx.arguments[1].unwrap_uint() as i32,
         ctx.arguments[2].unwrap_uint() as i32,

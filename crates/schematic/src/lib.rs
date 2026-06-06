@@ -12,6 +12,7 @@ use regex::Regex;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 use std::fs::{self, File};
+use std::io::Read;
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -116,6 +117,61 @@ pub fn paste_clipboard<W: World>(
     }
 }
 
+/// Paste a clipboard at multiple positions with a single `flush_block_changes` call.
+/// All block writes happen first, then one flush, then all block entities are applied.
+pub fn paste_clipboard_batch<W: World>(
+    world: &mut W,
+    cb: &WorldEditClipboard,
+    positions: &[BlockPos],
+    ignore_air: bool,
+) {
+    let entries = cb.data.entries();
+    let mut pending_block_entities: Vec<(BlockPos, BlockEntity)> = Vec::new();
+
+    for &pos in positions {
+        let offset_x = pos.x - cb.offset_x;
+        let offset_y = pos.y - cb.offset_y;
+        let offset_z = pos.z - cb.offset_z;
+        let mut i = 0;
+        let x_range = offset_x..offset_x + cb.size_x as i32;
+        let y_range = offset_y..offset_y + cb.size_y as i32;
+        let z_range = offset_z..offset_z + cb.size_z as i32;
+
+        'top_loop: for y in y_range {
+            for z in z_range.clone() {
+                for x in x_range.clone() {
+                    if i >= entries {
+                        break 'top_loop;
+                    }
+                    let entry = cb.data.get_entry(i);
+                    i += 1;
+                    if ignore_air && entry == 0 {
+                        continue;
+                    }
+                    world.set_block_raw(BlockPos::new(x, y, z), entry);
+                }
+            }
+        }
+
+        for (local_pos, block_entity) in &cb.block_entities {
+            pending_block_entities.push((
+                BlockPos {
+                    x: local_pos.x + offset_x,
+                    y: local_pos.y + offset_y,
+                    z: local_pos.z + offset_z,
+                },
+                block_entity.clone(),
+            ));
+        }
+    }
+
+    world.flush_block_changes();
+
+    for (pos, block_entity) in pending_block_entities {
+        world.set_block_entity(pos, block_entity);
+    }
+}
+
 macro_rules! nbt_as {
     // I'm not sure if path is the right type here.
     // It works though!
@@ -147,9 +203,8 @@ fn parse_block(str: &str) -> Option<Block> {
     Some(block)
 }
 
-pub fn load_schematic(path: &Path) -> Result<WorldEditClipboard> {
-    let mut file = File::open(path)?;
-    let nbt = nbt::Blob::from_gzip_reader(&mut file)?;
+pub fn load_schematic_from_reader<R: Read>(mut reader: R) -> Result<WorldEditClipboard> {
+    let nbt = nbt::Blob::from_gzip_reader(&mut reader)?;
 
     let root = if nbt.content.contains_key("Schematic") {
         nbt_as!(&nbt["Schematic"], nbt::Value::Compound)
@@ -162,6 +217,10 @@ pub fn load_schematic(path: &Path) -> Result<WorldEditClipboard> {
         2 | 3 => load_schematic_sponge(root, version),
         _ => bail!("unknown schematic version: {}", version),
     }
+}
+
+pub fn load_schematic(path: &Path) -> Result<WorldEditClipboard> {
+    load_schematic_from_reader(File::open(path)?)
 }
 
 fn read_block_container(
