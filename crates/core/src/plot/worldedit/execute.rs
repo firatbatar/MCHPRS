@@ -1470,39 +1470,6 @@ fn paste_romtile_plan_at_origin(
     Some(barrels_written)
 }
 
-pub(super) fn execute_romtile_w_file(mut ctx: CommandExecuteContext<'_>) {
-    let start_time = Instant::now();
-
-    let weight_bits = ctx.arguments[0].unwrap_uint() as usize;
-    let build_depth = ctx.arguments[1].unwrap_uint() as usize;
-    let file_name = ctx.arguments[2].unwrap_string().clone();
-
-    let Some(origin) = ctx.player.first_position else {
-        ctx.player.send_error_message("You must set //pos1 first.");
-        return;
-    };
-
-    let Some(plan) = build_romtile_plan(&mut ctx, weight_bits, build_depth, &file_name) else {
-        return;
-    };
-
-    let Some(barrels_written) = paste_romtile_plan_at_origin(&mut ctx, origin, &plan) else {
-        return;
-    };
-
-    ctx.player.send_worldedit_message(&format!(
-        "ROM LUT placed from binary file: {} address(es), {} bit weight, build_depth {}, {} vertical layer(s), {}x{} ROM tile grid, {} barrel(s). Signals inverted with 15 - raw_signal. ({:?})",
-        plan.address_count,
-        weight_bits,
-        build_depth,
-        plan.vertical_stacks,
-        plan.x_count,
-        plan.z_count,
-        barrels_written,
-        start_time.elapsed()
-    ));
-}
-
 fn paste_tiled_addressing_part_1_yellow_at_origin(
     ctx: &mut CommandExecuteContext<'_>,
     schematic_bytes: &[u8],
