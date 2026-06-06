@@ -742,34 +742,34 @@ static COMMANDS: LazyLock<HashMap<&'static str, WorldeditCommand>> = LazyLock::n
                requires_positions: true,
                ..Default::default()
             },
-            "//rom_system" => WorldeditCommand {
-        arguments: &[
-            argument!(
-                "weight_bits",
-                UnsignedInteger,
-                "Desired bit depth per readable line"
-            ),
-            argument!(
-                "build_depth",
-                UnsignedInteger,
-                "ROM build depth. Must be a multiple of 4"
-            ),
-            argument!(
-                "weight_file",
-                String,
-                "Weight file name inside the ./weights folder"
-            ),
-        ],
-        flags: &[
-            flag!('s', None, "Use the single-color ROM cell variant"),
-            flag!('a', None, "Skip air blocks while placing the addressing schematic"),
-        ],
-        execute_fn: execute_rom_system,
-        description: "Place addr1y and ROM tiles as one combined ROM system",
-        permission_node: "mchprs.we.romsystem",
-        requires_positions: true,
-        ..Default::default()
-    },
+            "//build_rom" => WorldeditCommand {
+                arguments: &[
+                    argument!(
+                        "weight_bits",
+                        UnsignedInteger,
+                        "Desired bit depth per readable line"
+                    ),
+                    argument!(
+                        "build_depth",
+                        UnsignedInteger,
+                        "ROM build depth. Must be a multiple of 4"
+                    ),
+                    argument!(
+                        "weight_file",
+                        String,
+                        "Weight file name inside the ./weights folder"
+                    ),
+                ],
+                flags: &[
+                    flag!('s', None, "Use the single-color ROM cell variant"),
+                    flag!('a', None, "Skip air blocks while placing the addressing schematic"),
+                ],
+                execute_fn: execute_rom_system,
+                description: "Builds a complete ROM structure with given binary data.",
+                permission_node: "mchprs.we.romsystem",
+                requires_positions: true,
+                ..Default::default()
+            },
             "//image_place" => WorldeditCommand {
                 arguments: &[
                     argument!("file", String, "Binary file name in ./images/ (784 bits / 98 bytes)"),
